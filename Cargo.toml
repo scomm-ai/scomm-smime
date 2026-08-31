@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/scomm-smime-core",
+    "crates/scomm-smime-cms",
+    "crates/scomm-smime-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/scomm-ai/scomm-smime"
+publish = false
+
+[workspace.dependencies]
+scomm-smime-core = { path = "crates/scomm-smime-core" }

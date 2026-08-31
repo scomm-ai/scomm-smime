@@ -1,0 +1,16 @@
+[package]
+name = "scomm-smime-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "C ABI for scomm-smime (Dart / Flutter FFI)."
+
+[lib]
+name = "scomm_smime"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+scomm-smime-core.workspace = true
+scomm-smime-cms = { path = "../scomm-smime-cms" }
+serde_json = "1"
