@@ -67,4 +67,35 @@ pub trait SmimeProvider: Send + Sync {
             "hybrid artifact PoP decaps".into(),
         ))
     }
+
+    /// Raw RSA-PSS-SHA256 signature over [data] (artifact_pop UTF-8) — no
+    /// CMS SignedData wrapping, unlike [Self::sign]. Matches what a
+    /// pubkey-server `smime-rsa-pss-sha256` artifact's self_signature needs.
+    fn pop_sign_classical(
+        &self,
+        data: &[u8],
+        private_key: &[u8],
+        passphrase: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let _ = (data, private_key, passphrase);
+        Err(SmimeError::UnsupportedAlgorithm(
+            "RSA-PSS artifact PoP signing".into(),
+        ))
+    }
+
+    /// Raw RSA-OAEP-SHA256 decrypt of [ciphertext] — no CMS EnvelopedData
+    /// parsing, unlike [Self::decrypt]. Matches what a pubkey-server
+    /// `smime-rsa-oaep-sha256` decrypt challenge sends (a small wrapped
+    /// nonce, not a full CMS message).
+    fn pop_rsa_decrypt(
+        &self,
+        ciphertext: &[u8],
+        private_key: &[u8],
+        passphrase: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let _ = (ciphertext, private_key, passphrase);
+        Err(SmimeError::UnsupportedAlgorithm(
+            "RSA-OAEP artifact PoP decrypt".into(),
+        ))
+    }
 }

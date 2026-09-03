@@ -217,6 +217,12 @@ class ScommSmime {
         ),
         _popHybrid = _lib.lookupFunction<_PopHybridN, _PopHybridD>(
           'scomm_smime_pop_hybrid_shared',
+        ),
+        _popSignClassical = _lib.lookupFunction<_SignN, _SignD>(
+          'scomm_smime_pop_sign_classical',
+        ),
+        _popRsaDecrypt = _lib.lookupFunction<_SignN, _SignD>(
+          'scomm_smime_pop_rsa_decrypt',
         );
 
   static ScommSmime? _instance;
@@ -239,6 +245,8 @@ class ScommSmime {
   final _TestPassD _testPass;
   final _SignD _popSign;
   final _PopHybridD _popHybrid;
+  final _SignD _popSignClassical;
+  final _SignD _popRsaDecrypt;
 
   int get abiVersion => _abiVersion();
 
@@ -476,6 +484,69 @@ class ScommSmime {
         kem.len,
         eph.ptr,
         eph.len,
+        outPtr,
+        outLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  /// Raw RSA-PSS-SHA256 signature over [data] — no CMS SignedData wrapping,
+  /// unlike [sign]. For a pubkey-server `smime-rsa-pss-sha256` artifact's
+  /// proof-of-possession self_signature.
+  Uint8List popSignClassical({
+    required List<int> data,
+    required List<int> privateKey,
+    String passphrase = '',
+  }) {
+    return using((arena) {
+      final d = _copy(arena, data);
+      final sk = _copy(arena, privateKey);
+      final pass = _copy(arena, utf8.encode(passphrase));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _popSignClassical(
+        d.ptr,
+        d.len,
+        sk.ptr,
+        sk.len,
+        pass.ptr,
+        pass.len,
+        outPtr,
+        outLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  /// Raw RSA-OAEP-SHA256 decrypt of [ciphertext] — no CMS EnvelopedData
+  /// parsing, unlike [decrypt]. For solving a pubkey-server
+  /// `smime-rsa-oaep-sha256` decrypt proof-of-possession challenge (a small
+  /// wrapped nonce, not a full CMS message).
+  Uint8List popRsaDecrypt({
+    required List<int> ciphertext,
+    required List<int> privateKey,
+    String passphrase = '',
+  }) {
+    return using((arena) {
+      final ct = _copy(arena, ciphertext);
+      final sk = _copy(arena, privateKey);
+      final pass = _copy(arena, utf8.encode(passphrase));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _popRsaDecrypt(
+        ct.ptr,
+        ct.len,
+        sk.ptr,
+        sk.len,
+        pass.ptr,
+        pass.len,
         outPtr,
         outLen,
       );

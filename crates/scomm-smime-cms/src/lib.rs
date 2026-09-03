@@ -8,8 +8,8 @@ use scomm_smime_core::*;
 use bundle::KeyBundle;
 use cert::{fingerprint_of, parse_email, rsa_encrypt_entry, rsa_sign_entry, x25519_encrypt_entry};
 use cms_envelop::{
-    decrypt_with_bundle, encrypt_to_entries, inspect_cms, maybe_pem_cms, pem_pkcs7, sign_mldsa,
-    sign_pss, verify_signature,
+    decrypt_with_bundle, encrypt_to_entries, inspect_cms, maybe_pem_cms, pem_pkcs7,
+    rsa_oaep_decrypt_raw, sign_mldsa, sign_pss, sign_pss_raw, verify_signature,
 };
 
 pub struct CmsSmime;
@@ -234,5 +234,33 @@ impl SmimeProvider for CmsSmime {
             .find(|e| is_pqc_catalog(&e.alg))
             .ok_or(SmimeError::NoSuitableEncryptionKey)?;
         pqc::pop_hybrid(entry, kem_ciphertext, ephemeral_x25519)
+    }
+
+    fn pop_sign_classical(
+        &self,
+        data: &[u8],
+        private_key: &[u8],
+        _passphrase: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let bundle = KeyBundle::parse(private_key)?;
+        let entry = bundle
+            .signing_entries()
+            .find(|e| e.alg.contains("rsa"))
+            .ok_or(SmimeError::NoSuitableSigningKey)?;
+        sign_pss_raw(data, entry)
+    }
+
+    fn pop_rsa_decrypt(
+        &self,
+        ciphertext: &[u8],
+        private_key: &[u8],
+        _passphrase: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let bundle = KeyBundle::parse(private_key)?;
+        let entry = bundle
+            .encryption_entries()
+            .find(|e| e.alg.contains("rsa"))
+            .ok_or(SmimeError::NoSuitableEncryptionKey)?;
+        rsa_oaep_decrypt_raw(ciphertext, entry)
     }
 }

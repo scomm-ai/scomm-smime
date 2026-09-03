@@ -417,3 +417,55 @@ pub unsafe extern "C" fn scomm_smime_pop_hybrid_shared(
         Ok(0)
     })
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_pop_sign_classical(
+    data: *const u8,
+    data_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    passphrase: *const u8,
+    passphrase_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let data = read_slice(data, data_len).to_vec();
+    let private_key = read_slice(private_key, private_key_len).to_vec();
+    let pass = if passphrase.is_null() || passphrase_len == 0 {
+        None
+    } else {
+        Some(String::from_utf8_lossy(read_slice(passphrase, passphrase_len)).into_owned())
+    };
+    run(|| {
+        clear_error();
+        let sig = engine().pop_sign_classical(&data, &private_key, pass.as_deref())?;
+        unsafe { write_buf(&sig, out, out_len) };
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_pop_rsa_decrypt(
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    passphrase: *const u8,
+    passphrase_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let ciphertext = read_slice(ciphertext, ciphertext_len).to_vec();
+    let private_key = read_slice(private_key, private_key_len).to_vec();
+    let pass = if passphrase.is_null() || passphrase_len == 0 {
+        None
+    } else {
+        Some(String::from_utf8_lossy(read_slice(passphrase, passphrase_len)).into_owned())
+    };
+    run(|| {
+        clear_error();
+        let plaintext = engine().pop_rsa_decrypt(&ciphertext, &private_key, pass.as_deref())?;
+        unsafe { write_buf(&plaintext, out, out_len) };
+        Ok(0)
+    })
+}

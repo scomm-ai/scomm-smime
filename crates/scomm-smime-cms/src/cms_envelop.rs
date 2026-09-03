@@ -472,14 +472,7 @@ fn rsa_pub_from_entry(entry: &KeyEntry) -> Result<RsaPublicKey> {
 }
 
 pub fn sign_pss(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
-    let pkcs8 = entry
-        .pkcs8_b64
-        .as_ref()
-        .ok_or(SmimeError::NoSuitableSigningKey)?;
-    let sk = rsa_from_pkcs8(pkcs8.as_bytes())?;
-    let signing = BlindedSigningKey::<RsaSha256>::new(sk);
-    let sig = signing.sign_with_rng(&mut OsRng, data);
-    let sig_bytes = sig.to_vec();
+    let sig_bytes = sign_pss_raw(data, entry)?;
     let signed = yasna::construct_der(|w| {
         w.write_sequence(|w| {
             w.next().write_oid(&oid(OID_RSA_PSS));
@@ -488,6 +481,34 @@ pub fn sign_pss(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
         });
     });
     Ok(wrap_content_info(oid(OID_SIGNED), signed))
+}
+
+/// The same RSA-PSS-SHA256 signature [sign_pss] produces, without the CMS
+/// SignedData `ContentInfo` wrapping — for artifact proof-of-possession,
+/// where the server verifies the raw signature bytes directly.
+pub fn sign_pss_raw(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
+    let pkcs8 = entry
+        .pkcs8_b64
+        .as_ref()
+        .ok_or(SmimeError::NoSuitableSigningKey)?;
+    let sk = rsa_from_pkcs8(pkcs8.as_bytes())?;
+    let signing = BlindedSigningKey::<RsaSha256>::new(sk);
+    let sig = signing.sign_with_rng(&mut OsRng, data);
+    Ok(sig.to_vec())
+}
+
+/// Raw RSA-OAEP-SHA256 decrypt of [ciphertext] — no CMS EnvelopedData
+/// parsing, unlike [decrypt_rsa_oaep]. For artifact proof-of-possession,
+/// where the server sends a small directly-RSA-encrypted nonce, not a full
+/// CMS message.
+pub fn rsa_oaep_decrypt_raw(ciphertext: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
+    let pkcs8 = entry
+        .pkcs8_b64
+        .as_ref()
+        .ok_or(SmimeError::NoSuitableEncryptionKey)?;
+    let sk = rsa_from_pkcs8(pkcs8.as_bytes())?;
+    sk.decrypt(Oaep::new::<Sha256>(), ciphertext)
+        .map_err(|_| SmimeError::DecryptionFailed)
 }
 
 pub fn sign_mldsa(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
