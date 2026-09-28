@@ -469,3 +469,27 @@ pub unsafe extern "C" fn scomm_smime_pop_rsa_decrypt(
         Ok(0)
     })
 }
+
+/// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
+/// in the one client library.
+pub fn link_anchor() -> usize {
+    let exports: [*const (); 16] = [
+        scomm_smime_buffer_free as *const (),
+        scomm_smime_last_error as *const (),
+        scomm_smime_inspect as *const (),
+        scomm_smime_generate as *const (),
+        scomm_smime_export_public as *const (),
+        scomm_smime_encrypt as *const (),
+        scomm_smime_decrypt as *const (),
+        scomm_smime_sign as *const (),
+        scomm_smime_verify as *const (),
+        scomm_smime_inspect_message as *const (),
+        scomm_smime_test_passphrase as *const (),
+        scomm_smime_pop_sign_mldsa as *const (),
+        scomm_smime_pop_hybrid_shared as *const (),
+        scomm_smime_pop_sign_classical as *const (),
+        scomm_smime_pop_rsa_decrypt as *const (),
+        scomm_smime_abi_version as *const (),
+    ];
+    exports.iter().fold(0, |n, ptr| n.wrapping_add(*ptr as usize))
+}

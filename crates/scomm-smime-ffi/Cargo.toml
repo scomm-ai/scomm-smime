@@ -8,7 +8,7 @@ description = "C ABI for scomm-smime (Dart / Flutter FFI)."
 
 [lib]
 name = "scomm_smime"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 scomm-smime-core.workspace = true
