@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:ffi' as ffi;
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:scomm_openpgp/scomm_openpgp.dart';
 
 import 'types.dart';
 
@@ -624,22 +624,5 @@ class ScommSmime {
     return out.buffer.asUint8List();
   }
 
-  static ffi.DynamicLibrary _open() {
-    final override = Platform.environment['SCOMM_SMIME_LIB'];
-    if (override != null && override.isNotEmpty) {
-      return ffi.DynamicLibrary.open(override);
-    }
-    if (Platform.isWindows) {
-      return ffi.DynamicLibrary.open('scomm_smime.dll');
-    }
-    if (Platform.isLinux) {
-      return ffi.DynamicLibrary.open('libscomm_smime.so');
-    }
-    if (Platform.isMacOS) {
-      return ffi.DynamicLibrary.open('libscomm_smime.dylib');
-    }
-    throw UnsupportedError(
-      'scomm_smime has no bundled library for ${Platform.operatingSystem}',
-    );
-  }
+  static ffi.DynamicLibrary _open() => ScommOpenPgp.instance.library;
 }
