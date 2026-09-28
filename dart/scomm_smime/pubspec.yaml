@@ -15,5 +15,5 @@ dependencies:
   scomm_openpgp:
     git:
       url: https://github.com/scomm-ai/scomm-openpgp.git
-      ref: 38b0ab4f67d8b1d5bf8c45e71767258bcfe3dd0f
+      ref: fc63eabd44092ce9cfb536ea2e3a8d8f8c3d5928
       path: dart/scomm_openpgp
