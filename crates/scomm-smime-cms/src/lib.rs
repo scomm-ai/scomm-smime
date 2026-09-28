@@ -81,7 +81,7 @@ impl SmimeProvider for CmsSmime {
         };
         let mut entries = vec![
             rsa_encrypt_entry(userid)?,
-            x25519_encrypt_entry(),
+            x25519_encrypt_entry()?,
             rsa_sign_entry(userid)?,
         ];
         if options.profile == KeyProfile::PqcCms {

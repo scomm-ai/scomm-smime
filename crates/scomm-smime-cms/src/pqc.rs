@@ -1,41 +1,126 @@
-use ml_dsa::signature::{Signer, Verifier};
-use ml_dsa::{EncodedSignature, EncodedVerifyingKey, Keypair, MlDsa65, SigningKey as MlDsaSigningKey, VerifyingKey as MlDsaVerifyingKey};
-use ml_kem::kem::{Decapsulate, Encapsulate};
-use ml_kem::{DecapsulationKey, EncapsulationKey, KeyExport, MlKem768};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use openssl::hash::{hash, MessageDigest};
+use openssl::rand::rand_bytes;
+use ossl::asymcipher::{EncOp, OsslAsymcipher};
+use ossl::pkey::{EvpPkey, EvpPkeyType, MlkeyData, PkeyData};
+use ossl::signature::{OsslSignature, SigAlg, SigOp};
+use ossl::OsslSecret;
 use scomm_smime_core::*;
-use sha2::{Digest, Sha256};
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 
 use crate::bundle::{b64_decode, b64_encode, KeyEntry};
-use crate::cert::x25519_raw_from_spki_or_raw;
+use crate::cert::{x25519_dh, x25519_public, x25519_raw_from_spki_or_raw};
 use crate::cms_envelop::{aes_decrypt_pub, extract_ori_iv_ct, extract_ori_payload};
 
 const MLKEM_CT_LEN: usize = 1088;
 const MLKEM_EK_LEN: usize = 1184;
 const MLKEM_SEED_LEN: usize = 64;
 
-fn kem_seed_from_bytes(bytes: &[u8]) -> Result<ml_kem::Seed> {
-    let arr: [u8; MLKEM_SEED_LEN] = bytes
+fn ctx() -> ossl::OsslContext {
+    ossl::OsslContext::new_lib_ctx()
+}
+
+fn sha256_32(data: &[u8]) -> Result<[u8; 32]> {
+    let dig = hash(MessageDigest::sha256(), data).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let bytes: [u8; 32] = dig
+        .as_ref()
         .try_into()
-        .map_err(|_| SmimeError::InvalidKey("ML-KEM seed".into()))?;
-    Ok(arr.into())
+        .map_err(|_| SmimeError::Internal("sha256".into()))?;
+    Ok(bytes)
+}
+
+fn random(n: usize) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; n];
+    rand_bytes(&mut buf).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    Ok(buf)
+}
+
+fn mlkem_decaps(seed: &[u8], ciphertext: &[u8]) -> Result<[u8; 32]> {
+    let c = ctx();
+    let mut key = EvpPkey::import(
+        &c,
+        EvpPkeyType::MlKem768,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: None,
+            prikey: None,
+            seed: Some(OsslSecret::from_slice(seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ML-KEM-768 seed".into()))?;
+    let mut decap = OsslAsymcipher::new(&c, EncOp::Decapsulate, &mut key, None)
+        .map_err(|_| SmimeError::DecryptionFailed)?;
+    let shared = decap
+        .decapsulate(ciphertext)
+        .map_err(|_| SmimeError::DecryptionFailed)?;
+    let bytes: &[u8] = shared.as_ref();
+    bytes.try_into().map_err(|_| SmimeError::DecryptionFailed)
+}
+
+fn mlkem_encaps(ek: &[u8]) -> Result<(Vec<u8>, [u8; 32])> {
+    let c = ctx();
+    let mut key = EvpPkey::import(
+        &c,
+        EvpPkeyType::MlKem768,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: Some(ek.to_vec()),
+            prikey: None,
+            seed: None,
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ML-KEM ek".into()))?;
+    let mut enc = OsslAsymcipher::new(&c, EncOp::Encapsulate, &mut key, None)
+        .map_err(|_| SmimeError::Internal("encapsulate".into()))?;
+    let mut ct = vec![0u8; MLKEM_CT_LEN];
+    let (ss, n) = enc
+        .encapsulate(&mut ct)
+        .map_err(|_| SmimeError::Internal("encapsulate".into()))?;
+    ct.truncate(n);
+    let shared: [u8; 32] = ss
+        .as_slice()
+        .try_into()
+        .map_err(|_| SmimeError::Internal("ml-kem shared".into()))?;
+    Ok((ct, shared))
+}
+
+fn mldsa_public(seed: &[u8]) -> Result<Vec<u8>> {
+    let c = ctx();
+    let key = EvpPkey::import(
+        &c,
+        EvpPkeyType::Mldsa65,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: None,
+            prikey: None,
+            seed: Some(OsslSecret::from_slice(seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ML-DSA seed".into()))?;
+    match key.export().map_err(|e| SmimeError::Internal(e.to_string()))? {
+        PkeyData::Mlkey(MlkeyData { pubkey: Some(ref pk), .. }) => Ok(pk.clone()),
+        _ => Err(SmimeError::InvalidKey("ML-DSA public".into())),
+    }
 }
 
 pub fn hybrid_encrypt_entry() -> Result<KeyEntry> {
-    let mut kem_seed = [0u8; MLKEM_SEED_LEN];
-    OsRng.fill_bytes(&mut kem_seed);
-    let dk = DecapsulationKey::<MlKem768>::from_seed(kem_seed.into());
-    let ek = dk.encapsulation_key();
-    let ek_bytes = ek.to_bytes();
-    let x_secret = StaticSecret::random_from_rng(OsRng);
-    let x_public = X25519Public::from(&x_secret);
-    let mut spki = Vec::new();
-    spki.extend_from_slice(ek_bytes.as_slice());
-    spki.extend_from_slice(x_public.as_bytes());
-    let mut secret = Vec::from(kem_seed);
-    secret.extend_from_slice(x_secret.as_bytes());
+    let kem_seed = random(MLKEM_SEED_LEN)?;
+    let x_seed = random(32)?;
+    let c = ctx();
+    let kem = EvpPkey::import(
+        &c,
+        EvpPkeyType::MlKem768,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: None,
+            prikey: None,
+            seed: Some(OsslSecret::from_slice(&kem_seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ML-KEM-768 seed".into()))?;
+    let ek = match kem.export().map_err(|e| SmimeError::Internal(e.to_string()))? {
+        PkeyData::Mlkey(MlkeyData { pubkey: Some(ref pk), .. }) => pk.clone(),
+        _ => return Err(SmimeError::InvalidKey("ML-KEM ek".into())),
+    };
+    let x_public = x25519_public(&x_seed)?;
+    let mut spki = ek;
+    spki.extend_from_slice(&x_public);
+    let mut secret = kem_seed;
+    secret.extend_from_slice(&x_seed);
     Ok(KeyEntry {
         alg: ALG_MLKEM_HYBRID.to_string(),
         purpose: "encryption".into(),
@@ -46,15 +131,13 @@ pub fn hybrid_encrypt_entry() -> Result<KeyEntry> {
 }
 
 pub fn mldsa_sign_entry() -> Result<KeyEntry> {
-    let mut seed = [0u8; 32];
-    OsRng.fill_bytes(&mut seed);
-    let sk = MlDsaSigningKey::<MlDsa65>::from_seed((&seed).into());
-    let vk = sk.verifying_key();
+    let seed = random(32)?;
+    let public = mldsa_public(&seed)?;
     Ok(KeyEntry {
         alg: ALG_MLDSA65.to_string(),
         purpose: "signing".into(),
         cert_pem: String::new(),
-        spki_b64: b64_encode(vk.encode().as_slice()),
+        spki_b64: b64_encode(&public),
         pkcs8_b64: Some(b64_encode(&seed)),
     })
 }
@@ -64,27 +147,21 @@ pub fn encapsulate_hybrid(recipient: &KeyEntry) -> Result<(Vec<u8>, [u8; 32])> {
     if spki.len() < MLKEM_EK_LEN + 32 {
         return Err(SmimeError::InvalidKey("hybrid SPKI".into()));
     }
-    let ek_bytes: [u8; MLKEM_EK_LEN] = spki[..MLKEM_EK_LEN]
-        .try_into()
-        .map_err(|_| SmimeError::InvalidKey("ML-KEM ek".into()))?;
     let x_raw = x25519_raw_from_spki_or_raw(&spki[MLKEM_EK_LEN..])?;
-    let ek = EncapsulationKey::<MlKem768>::new(&ek_bytes.into())
-        .map_err(|_| SmimeError::InvalidKey("ML-KEM ek decode".into()))?;
-    let (ct, ss) = ek.encapsulate();
-    let eph = StaticSecret::random_from_rng(OsRng);
-    let eph_pub = X25519Public::from(&eph);
-    let shared_x = eph.diffie_hellman(&X25519Public::from(x_raw));
+    let (ct, ss) = mlkem_encaps(&spki[..MLKEM_EK_LEN])?;
+    let eph = random(32)?;
+    let eph_pub = x25519_public(&eph)?;
+    let shared_x = x25519_dh(&eph, &x_raw)?;
     let mut concat = Vec::with_capacity(64);
-    concat.extend_from_slice(ss.as_ref());
-    concat.extend_from_slice(shared_x.as_bytes());
-    let mask: [u8; 32] = Sha256::digest(&concat).into();
-    let mut payload = Vec::new();
-    payload.extend_from_slice(ct.as_ref());
-    payload.extend_from_slice(eph_pub.as_bytes());
+    concat.extend_from_slice(&ss);
+    concat.extend_from_slice(&shared_x);
+    let mask = sha256_32(&concat)?;
+    let mut payload = ct;
+    payload.extend_from_slice(&eph_pub);
     Ok((payload, mask))
 }
 
-fn hybrid_secret(entry: &KeyEntry) -> Result<(DecapsulationKey<MlKem768>, [u8; 32])> {
+fn hybrid_secret(entry: &KeyEntry) -> Result<(Vec<u8>, [u8; 32])> {
     let secret = b64_decode(
         entry
             .pkcs8_b64
@@ -94,35 +171,31 @@ fn hybrid_secret(entry: &KeyEntry) -> Result<(DecapsulationKey<MlKem768>, [u8; 3
     if secret.len() < MLKEM_SEED_LEN + 32 {
         return Err(SmimeError::InvalidKey("hybrid secret".into()));
     }
-    let dk = DecapsulationKey::<MlKem768>::from_seed(kem_seed_from_bytes(&secret[..MLKEM_SEED_LEN])?);
     let x_seed: [u8; 32] = secret[MLKEM_SEED_LEN..MLKEM_SEED_LEN + 32]
         .try_into()
         .map_err(|_| SmimeError::InvalidKey("x25519 seed".into()))?;
-    Ok((dk, x_seed))
+    Ok((secret[..MLKEM_SEED_LEN].to_vec(), x_seed))
 }
 
 pub fn decapsulate_and_decrypt(entry: &KeyEntry, cms: &[u8]) -> Result<Vec<u8>> {
-    let (dk, x_seed) = hybrid_secret(entry)?;
+    let (kem_seed, x_seed) = hybrid_secret(entry)?;
     let (recip, iv, ct) = extract_ori_iv_ct(cms)?;
     let payload = extract_ori_payload(&recip)?;
     if payload.len() < MLKEM_CT_LEN + 32 + 32 {
         return Err(SmimeError::MalformedMessage);
     }
-    let kem_ct: [u8; MLKEM_CT_LEN] = payload[..MLKEM_CT_LEN]
-        .try_into()
-        .map_err(|_| SmimeError::MalformedMessage)?;
     let eph: [u8; 32] = payload[MLKEM_CT_LEN..MLKEM_CT_LEN + 32]
         .try_into()
         .map_err(|_| SmimeError::MalformedMessage)?;
     let wrapped: [u8; 32] = payload[MLKEM_CT_LEN + 32..MLKEM_CT_LEN + 64]
         .try_into()
         .map_err(|_| SmimeError::MalformedMessage)?;
-    let ss = dk.decapsulate((&kem_ct).into());
-    let shared_x = StaticSecret::from(x_seed).diffie_hellman(&X25519Public::from(eph));
+    let ss = mlkem_decaps(&kem_seed, &payload[..MLKEM_CT_LEN])?;
+    let shared_x = x25519_dh(&x_seed, &eph)?;
     let mut concat = Vec::with_capacity(64);
-    concat.extend_from_slice(ss.as_ref());
-    concat.extend_from_slice(shared_x.as_bytes());
-    let mask: [u8; 32] = Sha256::digest(&concat).into();
+    concat.extend_from_slice(&ss);
+    concat.extend_from_slice(&shared_x);
+    let mask = sha256_32(&concat)?;
     let mut cek = wrapped;
     for (w, s) in cek.iter_mut().zip(mask.iter()) {
         *w ^= s;
@@ -138,42 +211,66 @@ pub fn pop_hybrid(
     if kem_ciphertext.len() != MLKEM_CT_LEN {
         return Err(SmimeError::InvalidArgument("ML-KEM-768 ct".into()));
     }
-    let (dk, x_seed) = hybrid_secret(entry)?;
-    let ct: [u8; MLKEM_CT_LEN] = kem_ciphertext
-        .try_into()
-        .map_err(|_| SmimeError::InvalidArgument("kem ct".into()))?;
-    let ss = dk.decapsulate((&ct).into());
+    let (kem_seed, x_seed) = hybrid_secret(entry)?;
+    let ss = mlkem_decaps(&kem_seed, kem_ciphertext)?;
     let eph = x25519_raw_from_spki_or_raw(ephemeral_x25519)?;
-    let shared_x = StaticSecret::from(x_seed).diffie_hellman(&X25519Public::from(eph));
+    let shared_x = x25519_dh(&x_seed, &eph)?;
     let mut out = Vec::with_capacity(64);
-    out.extend_from_slice(ss.as_ref());
-    out.extend_from_slice(shared_x.as_bytes());
+    out.extend_from_slice(&ss);
+    out.extend_from_slice(&shared_x);
     Ok(out)
 }
 
 pub fn sign_mldsa(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
     let seed = b64_decode(entry.pkcs8_b64.as_ref().ok_or(SmimeError::NoSuitableSigningKey)?)?;
-    let seed32: [u8; 32] = seed
-        .as_slice()
-        .try_into()
-        .map_err(|_| SmimeError::InvalidKey("ML-DSA seed".into()))?;
-    let sk = MlDsaSigningKey::<MlDsa65>::from_seed((&seed32).into());
-    Ok(sk.sign(data).encode().as_slice().to_vec())
+    if seed.len() != 32 {
+        return Err(SmimeError::InvalidKey("ML-DSA seed".into()));
+    }
+    let c = ctx();
+    let mut key = EvpPkey::import(
+        &c,
+        EvpPkeyType::Mldsa65,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: None,
+            prikey: None,
+            seed: Some(OsslSecret::from_slice(&seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ML-DSA seed".into()))?;
+    let mut signer = OsslSignature::new(&c, SigOp::Sign, SigAlg::Mldsa65, &mut key, None)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let mut signature = vec![0u8; 3309];
+    signer
+        .sign(data, Some(&mut signature))
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    Ok(signature)
 }
 
 pub fn verify_mldsa(data: &[u8], sig: &[u8], entry: &KeyEntry) -> bool {
-    let Ok(vk_bytes) = b64_decode(&entry.spki_b64) else {
+    if sig.len() != 3309 {
+        return false;
+    }
+    let Ok(vk) = b64_decode(&entry.spki_b64) else {
         return false;
     };
-    let Ok(enc_vk) = EncodedVerifyingKey::<MlDsa65>::try_from(vk_bytes.as_slice()) else {
+    if vk.len() != 1952 {
+        return false;
+    }
+    let c = ctx();
+    let Ok(mut key) = EvpPkey::import(
+        &c,
+        EvpPkeyType::Mldsa65,
+        PkeyData::Mlkey(MlkeyData {
+            pubkey: Some(vk),
+            prikey: None,
+            seed: None,
+        }),
+    ) else {
         return false;
     };
-    let vk = MlDsaVerifyingKey::<MlDsa65>::decode(&enc_vk);
-    let Ok(enc_sig) = EncodedSignature::<MlDsa65>::try_from(sig) else {
+    let Ok(mut verifier) = OsslSignature::new(&c, SigOp::Verify, SigAlg::Mldsa65, &mut key, None)
+    else {
         return false;
     };
-    let Some(sig) = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig) else {
-        return false;
-    };
-    vk.verify(data, &sig).is_ok()
+    verifier.verify(data, Some(sig)).is_ok()
 }

@@ -15,3 +15,6 @@ publish = false
 
 [workspace.dependencies]
 scomm-smime-core = { path = "crates/scomm-smime-core" }
+
+[patch.crates-io]
+openssl-src = { git = "https://github.com/advforks/openssl-src-rs", rev = "83ef638c16afda3c3fe9ebf3b7966f991176e35c" }

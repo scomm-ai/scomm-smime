@@ -1,23 +1,19 @@
 //! Minimal RFC 5652 EnvelopedData / SignedData for first-ship algorithms.
 
-use aes::Aes256;
-use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use rand::rngs::OsRng;
-use rand::RngCore;
-use rsa::pkcs8::DecodePublicKey;
-use rsa::pss::{BlindedSigningKey, Signature as PssSignature, VerifyingKey as PssVerifyingKey};
-use rsa::sha2::Sha256 as RsaSha256;
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
-use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
+use openssl::encrypt::{Decrypter, Encrypter};
+use openssl::hash::MessageDigest;
+use openssl::pkey::{PKey, Private};
+use openssl::rand::rand_bytes;
+use openssl::rsa::{Padding, Rsa};
+use openssl::sign::{RsaPssSaltlen, Signer, Verifier};
+use openssl::symm::Cipher;
 use scomm_smime_core::*;
-use sha2::Sha256;
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use x509_parser::prelude::{FromDer, X509Certificate};
 use yasna::models::ObjectIdentifier;
 use yasna::Tag;
 
 use crate::bundle::{b64_decode, KeyBundle, KeyEntry};
-use crate::cert::{rsa_from_pkcs8, x25519_raw_from_spki_or_raw};
+use crate::cert::{rsa_from_pkcs8, x25519_dh, x25519_public, x25519_raw_from_spki_or_raw};
 use crate::pqc;
 
 const OID_ENVELOPED: &[u64] = &[1, 2, 840, 113549, 1, 7, 3];
@@ -31,9 +27,6 @@ const OID_X25519_ORI: &[u64] = &[1, 3, 101, 110];
 const OID_HYBRID_ORI: &[u64] = &[1, 3, 6, 1, 4, 1, 54392, 1, 1];
 const OID_MLDSA_ORI: &[u64] = &[1, 3, 6, 1, 4, 1, 54392, 1, 2];
 
-type Aes256CbcEnc = cbc::Encryptor<Aes256>;
-type Aes256CbcDec = cbc::Decryptor<Aes256>;
-
 fn oid(slice: &[u64]) -> ObjectIdentifier {
     ObjectIdentifier::from_slice(slice)
 }
@@ -44,29 +37,26 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     Ok(parsed.contents().to_vec())
 }
 
-fn rsa_pub_from_cert_pem(pem: &str) -> Result<RsaPublicKey> {
+fn rsa_pub_from_cert_pem(pem: &str) -> Result<PKey<openssl::pkey::Public>> {
     let der = pem_to_der(pem)?;
     let (_, cert) = X509Certificate::from_der(&der)
         .map_err(|_| SmimeError::InvalidKey("X.509".into()))?;
-    let spki = cert.public_key().raw;
-    RsaPublicKey::from_public_key_der(spki)
-        .map_err(|_| SmimeError::InvalidKey("RSA SPKI".into()))
+    let rsa = Rsa::public_key_from_der(cert.public_key().raw)
+        .map_err(|_| SmimeError::InvalidKey("RSA SPKI".into()))?;
+    PKey::from_rsa(rsa).map_err(|e| SmimeError::Internal(e.to_string()))
 }
 
 fn aes_encrypt(cek: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, [u8; 16])> {
     let mut iv = [0u8; 16];
-    OsRng.fill_bytes(&mut iv);
-    let ct = Aes256CbcEnc::new(cek.into(), &iv.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    rand_bytes(&mut iv).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let ct = openssl::symm::encrypt(Cipher::aes_256_cbc(), cek, Some(&iv), plaintext)
+        .map_err(|_| SmimeError::Internal("aes-cbc".into()))?;
     Ok((ct, iv))
 }
 
 fn aes_decrypt(cek: &[u8; 32], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    let iv: [u8; 16] = iv
-        .try_into()
-        .map_err(|_| SmimeError::MalformedMessage)?;
-    Aes256CbcDec::new(cek.into(), &iv.into())
-        .decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
+    let iv: [u8; 16] = iv.try_into().map_err(|_| SmimeError::MalformedMessage)?;
+    openssl::symm::decrypt(Cipher::aes_256_cbc(), cek, Some(&iv), ciphertext)
         .map_err(|_| SmimeError::DecryptionFailed)
 }
 
@@ -86,14 +76,23 @@ fn rsa_oaep_enveloped(plaintext: &[u8], cert_pems: &[&str]) -> Result<Vec<u8>> {
         return Err(SmimeError::NoSuitableEncryptionKey);
     }
     let mut cek = [0u8; 32];
-    OsRng.fill_bytes(&mut cek);
+    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
     let (ct, iv) = aes_encrypt(&cek, plaintext)?;
     let mut recips: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::new();
     for pem in cert_pems {
         let rsa_pub = rsa_pub_from_cert_pem(pem)?;
-        let wrapped = rsa_pub
-            .encrypt(&mut OsRng, Oaep::new::<Sha256>(), &cek)
+        let mut enc = Encrypter::new(&rsa_pub).map_err(|e| SmimeError::Internal(e.to_string()))?;
+        enc.set_rsa_padding(Padding::PKCS1_OAEP)
+            .map_err(|e| SmimeError::Internal(e.to_string()))?;
+        enc.set_rsa_oaep_md(MessageDigest::sha256())
+            .map_err(|e| SmimeError::Internal(e.to_string()))?;
+        enc.set_rsa_mgf1_md(MessageDigest::sha256())
+            .map_err(|e| SmimeError::Internal(e.to_string()))?;
+        let mut wrapped = vec![0u8; enc.encrypt_len(&cek).map_err(|e| SmimeError::Internal(e.to_string()))?];
+        let n = enc
+            .encrypt(&cek, &mut wrapped)
             .map_err(|_| SmimeError::Internal("RSA-OAEP wrap".into()))?;
+        wrapped.truncate(n);
         let der = pem_to_der(pem)?;
         let (_, cert) = X509Certificate::from_der(&der)
             .map_err(|_| SmimeError::InvalidKey("X.509".into()))?;
@@ -172,24 +171,25 @@ fn ori_enveloped(
 
 fn x25519_enveloped(plaintext: &[u8], recipient_spki: &[u8]) -> Result<Vec<u8>> {
     let mut cek = [0u8; 32];
-    OsRng.fill_bytes(&mut cek);
-    let eph_secret = StaticSecret::random_from_rng(OsRng);
-    let eph_public = X25519Public::from(&eph_secret);
+    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let mut eph_secret = [0u8; 32];
+    rand_bytes(&mut eph_secret).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let eph_public = x25519_public(&eph_secret)?;
     let their = x25519_raw_from_spki_or_raw(recipient_spki)?;
-    let shared = eph_secret.diffie_hellman(&X25519Public::from(their));
+    let shared = x25519_dh(&eph_secret, &their)?;
     let mut wrapped = cek;
-    for (w, s) in wrapped.iter_mut().zip(shared.as_bytes().iter()) {
+    for (w, s) in wrapped.iter_mut().zip(shared.iter()) {
         *w ^= s;
     }
     let mut payload = Vec::with_capacity(64);
-    payload.extend_from_slice(eph_public.as_bytes());
+    payload.extend_from_slice(&eph_public);
     payload.extend_from_slice(&wrapped);
     ori_enveloped(plaintext, OID_X25519_ORI, &payload, &cek)
 }
 
 fn hybrid_enveloped(plaintext: &[u8], recipient: &KeyEntry) -> Result<Vec<u8>> {
     let mut cek = [0u8; 32];
-    OsRng.fill_bytes(&mut cek);
+    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
     let (payload, kek_material) = pqc::encapsulate_hybrid(recipient)?;
     let mut wrapped = cek;
     for (w, s) in wrapped.iter_mut().zip(kek_material.iter()) {
@@ -325,8 +325,7 @@ pub fn decrypt_with_bundle(cms: &[u8], bundle: &KeyBundle) -> Result<DecryptResu
                 if raw.len() == 32 {
                     let mut seed = [0u8; 32];
                     seed.copy_from_slice(&raw);
-                    let sk = StaticSecret::from(seed);
-                    if let Ok(pt) = decrypt_x25519(&der, &sk) {
+                    if let Ok(pt) = decrypt_x25519(&der, &seed) {
                         return Ok(DecryptResult {
                             plaintext: pt,
                             algorithm: ALG_X25519.to_string(),
@@ -384,7 +383,7 @@ fn read_enveloped_parts(
     .map_err(|_| SmimeError::MalformedMessage)
 }
 
-fn decrypt_rsa_oaep(cms: &[u8], sk: &RsaPrivateKey) -> Result<Vec<u8>> {
+fn decrypt_rsa_oaep(cms: &[u8], sk: &PKey<Private>) -> Result<Vec<u8>> {
     let (recip, iv, ct) = read_enveloped_parts(cms)?;
     let mut wrapped_keys: Vec<Vec<u8>> = Vec::new();
     yasna::parse_der(&recip, |r| {
@@ -405,7 +404,7 @@ fn decrypt_rsa_oaep(cms: &[u8], sk: &RsaPrivateKey) -> Result<Vec<u8>> {
     }
     let mut last = SmimeError::DecryptionFailed;
     for wrapped in wrapped_keys {
-        match sk.decrypt(Oaep::new::<Sha256>(), &wrapped) {
+        match oaep_decrypt(sk, &wrapped) {
             Ok(cek_vec) => {
                 if let Ok(cek) = <[u8; 32]>::try_from(cek_vec.as_slice()) {
                     if let Ok(pt) = aes_decrypt(&cek, &iv, &ct) {
@@ -422,7 +421,7 @@ fn decrypt_rsa_oaep(cms: &[u8], sk: &RsaPrivateKey) -> Result<Vec<u8>> {
     Err(last)
 }
 
-fn decrypt_x25519(cms: &[u8], sk: &StaticSecret) -> Result<Vec<u8>> {
+fn decrypt_x25519(cms: &[u8], sk: &[u8; 32]) -> Result<Vec<u8>> {
     let (recip, iv, ct) = read_enveloped_parts(cms)?;
     let payload = extract_ori_payload(&recip)?;
     if payload.len() != 64 {
@@ -433,9 +432,9 @@ fn decrypt_x25519(cms: &[u8], sk: &StaticSecret) -> Result<Vec<u8>> {
         .map_err(|_| SmimeError::MalformedMessage)?;
     let mut wrapped = [0u8; 32];
     wrapped.copy_from_slice(&payload[32..]);
-    let shared = sk.diffie_hellman(&X25519Public::from(eph));
+    let shared = x25519_dh(sk, &eph)?;
     let mut cek = wrapped;
-    for (w, s) in cek.iter_mut().zip(shared.as_bytes().iter()) {
+    for (w, s) in cek.iter_mut().zip(shared.iter()) {
         *w ^= s;
     }
     aes_decrypt(&cek, &iv, &ct)
@@ -467,8 +466,36 @@ pub fn aes_decrypt_pub(cek: &[u8; 32], iv: &[u8], ct: &[u8]) -> Result<Vec<u8>> 
     aes_decrypt(cek, iv, ct)
 }
 
-fn rsa_pub_from_entry(entry: &KeyEntry) -> Result<RsaPublicKey> {
-    rsa_pub_from_cert_pem(&entry.cert_pem)
+fn pss_verify(pk: &PKey<openssl::pkey::Public>, message: &[u8], sig: &[u8]) -> bool {
+    let Ok(mut verifier) = Verifier::new(MessageDigest::sha256(), pk) else {
+        return false;
+    };
+    if verifier.set_rsa_padding(Padding::PKCS1_PSS).is_err() {
+        return false;
+    }
+    if verifier
+        .set_rsa_pss_saltlen(RsaPssSaltlen::DIGEST_LENGTH)
+        .is_err()
+    {
+        return false;
+    }
+    verifier.update(message).is_ok() && verifier.verify(sig).unwrap_or(false)
+}
+
+fn oaep_decrypt(sk: &PKey<Private>, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    let mut dec = Decrypter::new(sk).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    dec.set_rsa_padding(Padding::PKCS1_OAEP)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    dec.set_rsa_oaep_md(MessageDigest::sha256())
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    dec.set_rsa_mgf1_md(MessageDigest::sha256())
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let mut out = vec![0u8; dec.decrypt_len(ciphertext).map_err(|e| SmimeError::Internal(e.to_string()))?];
+    let n = dec
+        .decrypt(ciphertext, &mut out)
+        .map_err(|_| SmimeError::DecryptionFailed)?;
+    out.truncate(n);
+    Ok(out)
 }
 
 pub fn sign_pss(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
@@ -492,9 +519,20 @@ pub fn sign_pss_raw(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
         .as_ref()
         .ok_or(SmimeError::NoSuitableSigningKey)?;
     let sk = rsa_from_pkcs8(pkcs8.as_bytes())?;
-    let signing = BlindedSigningKey::<RsaSha256>::new(sk);
-    let sig = signing.sign_with_rng(&mut OsRng, data);
-    Ok(sig.to_vec())
+    let mut signing = Signer::new(MessageDigest::sha256(), &sk)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .set_rsa_padding(Padding::PKCS1_PSS)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .set_rsa_pss_saltlen(RsaPssSaltlen::DIGEST_LENGTH)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .update(data)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .sign_to_vec()
+        .map_err(|_| SmimeError::Internal("rsa-pss".into()))
 }
 
 /// Raw RSA-OAEP-SHA256 decrypt of [ciphertext] — no CMS EnvelopedData
@@ -507,8 +545,7 @@ pub fn rsa_oaep_decrypt_raw(ciphertext: &[u8], entry: &KeyEntry) -> Result<Vec<u
         .as_ref()
         .ok_or(SmimeError::NoSuitableEncryptionKey)?;
     let sk = rsa_from_pkcs8(pkcs8.as_bytes())?;
-    sk.decrypt(Oaep::new::<Sha256>(), ciphertext)
-        .map_err(|_| SmimeError::DecryptionFailed)
+    oaep_decrypt(&sk, ciphertext)
 }
 
 pub fn sign_mldsa(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
@@ -559,14 +596,11 @@ pub fn verify_signature(data: &[u8], signature: &[u8], public: &KeyBundle) -> Re
             if e.cert_pem.is_empty() {
                 continue;
             }
-            if let Ok(pk) = rsa_pub_from_entry(e) {
-                let vk = PssVerifyingKey::<RsaSha256>::new(pk);
-                if let Ok(sig_t) = PssSignature::try_from(sig.as_slice()) {
-                    if vk.verify(message, &sig_t).is_ok() {
-                        return Ok(VerificationResult {
-                            validity: SignatureValidity::CryptographicallyValid,
-                        });
-                    }
+            if let Ok(pk) = rsa_pub_from_cert_pem(&e.cert_pem) {
+                if pss_verify(&pk, message, &sig) {
+                    return Ok(VerificationResult {
+                        validity: SignatureValidity::CryptographicallyValid,
+                    });
                 }
             }
         }

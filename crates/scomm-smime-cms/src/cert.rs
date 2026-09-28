@@ -1,13 +1,11 @@
-use rand::rngs::OsRng;
-use rsa::pkcs1v15::SigningKey;
-use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
-use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
-use rsa::sha2::Sha256 as RsaSha256;
-use rsa::signature::{SignatureEncoding, Signer};
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use openssl::hash::{hash, MessageDigest};
+use openssl::pkey::{PKey, Private};
+use openssl::rsa::{Padding, Rsa};
+use openssl::sign::Signer;
+use ossl::derive::EcdhDerive;
+use ossl::pkey::{EccData, EvpPkey, EvpPkeyType, PkeyData};
+use ossl::OsslSecret;
 use scomm_smime_core::*;
-use sha2::{Digest, Sha256};
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use yasna::models::ObjectIdentifier;
 use yasna::Tag;
 
@@ -22,14 +20,10 @@ pub fn parse_email(userid: &str) -> String {
     userid.trim().to_string()
 }
 
-pub fn rsa_pkcs8(bits: usize) -> Result<(RsaPrivateKey, Vec<u8>)> {
-    let mut rng = OsRng;
-    let key = RsaPrivateKey::new(&mut rng, bits)
-        .map_err(|e| SmimeError::Internal(format!("rsa generate: {e}")))?;
-    let der = key
-        .to_pkcs1_der()
-        .map_err(|e| SmimeError::Internal(format!("pkcs1: {e}")))?;
-    Ok((key, der.as_bytes().to_vec()))
+pub fn rsa_pkcs8(bits: u32) -> Result<Vec<u8>> {
+    let key = Rsa::generate(bits).map_err(|e| SmimeError::Internal(format!("rsa generate: {e}")))?;
+    key.private_key_to_der()
+        .map_err(|e| SmimeError::Internal(format!("pkcs1: {e}")))
 }
 
 fn oid(slice: &[u64]) -> ObjectIdentifier {
@@ -44,15 +38,10 @@ pub fn self_signed_rsa(
     sign: bool,
 ) -> Result<String> {
     let email = parse_email(userid);
-    let sk = RsaPrivateKey::from_pkcs1_der(pkcs8)
-        .or_else(|_| RsaPrivateKey::from_pkcs8_der(pkcs8))
-        .or_else(|_| RsaPrivateKey::from_pkcs8_pem(&String::from_utf8_lossy(pkcs8)))
-        .map_err(|_| SmimeError::InvalidKey("PKCS#8".into()))?;
-    let pk = RsaPublicKey::from(&sk);
-    let spki = pk
-        .to_public_key_der()
-        .map_err(|e| SmimeError::Internal(format!("spki: {e}")))?
-        .to_vec();
+    let sk = rsa_from_pkcs8(pkcs8)?;
+    let spki = sk
+        .public_key_to_der()
+        .map_err(|e| SmimeError::Internal(format!("spki: {e}")))?;
 
     let mut ku: u8 = 0;
     if encrypt {
@@ -133,8 +122,17 @@ pub fn self_signed_rsa(
         });
     });
 
-    let signing = SigningKey::<RsaSha256>::new(sk);
-    let sig = signing.sign(&tbs);
+    let mut signing = Signer::new(MessageDigest::sha256(), &sk)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .set_rsa_padding(Padding::PKCS1)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signing
+        .update(&tbs)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let sig = signing
+        .sign_to_vec()
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
 
     let cert_der = yasna::construct_der(|w| {
         w.write_sequence(|w| {
@@ -143,7 +141,7 @@ pub fn self_signed_rsa(
                 w.next().write_oid(&oid(&[1, 2, 840, 113549, 1, 1, 11]));
                 w.next().write_null();
             });
-            w.next().write_bitvec_bytes(sig.to_bytes().as_ref(), sig.to_bytes().as_ref().len() * 8);
+            w.next().write_bitvec_bytes(&sig, sig.len() * 8);
         });
     });
 
@@ -156,11 +154,61 @@ fn generalized_time(s: &str) -> Vec<u8> {
     out
 }
 
-pub fn x25519_pair() -> (StaticSecret, X25519Public, Vec<u8>) {
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = X25519Public::from(&secret);
-    let spki = x25519_spki(public.as_bytes());
-    (secret, public, spki)
+pub fn x25519_pair() -> Result<([u8; 32], [u8; 32], Vec<u8>)> {
+    let mut secret = [0u8; 32];
+    openssl::rand::rand_bytes(&mut secret).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let public = x25519_public(&secret)?;
+    let spki = x25519_spki(&public);
+    Ok((secret, public, spki))
+}
+
+pub fn x25519_public(seed: &[u8]) -> Result<[u8; 32]> {
+    let c = ossl::OsslContext::new_lib_ctx();
+    let key = EvpPkey::import(
+        &c,
+        EvpPkeyType::X25519,
+        PkeyData::Ecc(EccData {
+            pubkey: None,
+            prikey: Some(OsslSecret::from_slice(seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("X25519 seed".into()))?;
+    match key.export().map_err(|e| SmimeError::Internal(e.to_string()))? {
+        PkeyData::Ecc(EccData { pubkey: Some(ref pk), .. }) if pk.len() == 32 => {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&pk);
+            Ok(out)
+        }
+        _ => Err(SmimeError::InvalidKey("X25519 public".into())),
+    }
+}
+
+pub fn x25519_dh(seed: &[u8], peer: &[u8; 32]) -> Result<[u8; 32]> {
+    let c = ossl::OsslContext::new_lib_ctx();
+    let mut secret = EvpPkey::import(
+        &c,
+        EvpPkeyType::X25519,
+        PkeyData::Ecc(EccData {
+            pubkey: None,
+            prikey: Some(OsslSecret::from_slice(seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("X25519 seed".into()))?;
+    let mut public = EvpPkey::import(
+        &c,
+        EvpPkeyType::X25519,
+        PkeyData::Ecc(EccData {
+            pubkey: Some(peer.to_vec()),
+            prikey: None,
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidArgument("X25519 peer".into()))?;
+    let mut deriver = EcdhDerive::new(&c, &mut secret).map_err(|_| SmimeError::DecryptionFailed)?;
+    let mut shared = vec![0u8; 32];
+    deriver
+        .derive(&mut public, &mut shared)
+        .map_err(|_| SmimeError::DecryptionFailed)?;
+    shared.try_into().map_err(|_| SmimeError::DecryptionFailed)
 }
 
 pub fn x25519_spki(raw32: &[u8]) -> Vec<u8> {
@@ -187,17 +235,16 @@ pub fn x25519_raw_from_spki_or_raw(bytes: &[u8]) -> Result<[u8; 32]> {
     Err(SmimeError::InvalidKey("x25519 public key".into()))
 }
 
-pub fn rsa_from_pkcs8(pkcs8: &[u8]) -> Result<RsaPrivateKey> {
+pub fn rsa_from_pkcs8(pkcs8: &[u8]) -> Result<PKey<Private>> {
     let text = String::from_utf8_lossy(pkcs8);
-    let der = if text.contains("BEGIN") {
-        return RsaPrivateKey::from_pkcs1_pem(&text)
-            .or_else(|_| RsaPrivateKey::from_pkcs8_pem(&text))
+    if text.contains("BEGIN") {
+        return PKey::private_key_from_pem(text.as_bytes())
+            .or_else(|_| Rsa::private_key_from_pem(text.as_bytes()).and_then(PKey::from_rsa))
             .map_err(|_| SmimeError::InvalidKey("RSA PEM".into()));
-    } else {
-        crate::bundle::b64_decode(&text).unwrap_or_else(|_| pkcs8.to_vec())
-    };
-    RsaPrivateKey::from_pkcs1_der(&der)
-        .or_else(|_| RsaPrivateKey::from_pkcs8_der(&der))
+    }
+    let der = crate::bundle::b64_decode(&text).unwrap_or_else(|_| pkcs8.to_vec());
+    PKey::private_key_from_pkcs8(&der)
+        .or_else(|_| Rsa::private_key_from_der(&der).and_then(PKey::from_rsa))
         .map_err(|_| {
             SmimeError::InvalidKey(format!(
                 "RSA PKCS#8 len={} prefix={:?}",
@@ -208,12 +255,14 @@ pub fn rsa_from_pkcs8(pkcs8: &[u8]) -> Result<RsaPrivateKey> {
 }
 
 pub fn fingerprint_of(bytes: &[u8]) -> String {
-    let d = Sha256::digest(bytes);
+let Ok(d) = hash(MessageDigest::sha256(), bytes) else {
+        return String::new();
+    };
     d.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 pub fn rsa_encrypt_entry(userid: &str) -> Result<KeyEntry> {
-    let (_key, pkcs8) = rsa_pkcs8(2048)?;
+    let pkcs8 = rsa_pkcs8(2048)?;
     let cert = self_signed_rsa(userid, &pkcs8, true, false)?;
     Ok(KeyEntry {
         alg: ALG_RSA_OAEP.to_string(),
@@ -225,7 +274,7 @@ pub fn rsa_encrypt_entry(userid: &str) -> Result<KeyEntry> {
 }
 
 pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
-    let (_key, pkcs8) = rsa_pkcs8(2048)?;
+    let pkcs8 = rsa_pkcs8(2048)?;
     let cert = self_signed_rsa(userid, &pkcs8, false, true)?;
     Ok(KeyEntry {
         alg: ALG_RSA_PSS.to_string(),
@@ -236,13 +285,13 @@ pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
     })
 }
 
-pub fn x25519_encrypt_entry() -> KeyEntry {
-    let (secret, _public, spki) = x25519_pair();
-    KeyEntry {
+pub fn x25519_encrypt_entry() -> Result<KeyEntry> {
+    let (secret, _public, spki) = x25519_pair()?;
+    Ok(KeyEntry {
         alg: ALG_X25519.to_string(),
         purpose: "encryption".into(),
         cert_pem: String::new(),
         spki_b64: b64_encode(&spki),
-        pkcs8_b64: Some(b64_encode(secret.as_bytes())),
-    }
+        pkcs8_b64: Some(b64_encode(&secret)),
+    })
 }
