@@ -95,11 +95,17 @@ pub struct GeneratedKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignOptions {
     pub detached: bool,
+    /// Catalog name such as [`ALG_ED25519`]. `None` keeps the existing
+    /// ML-DSA, then RSA-PSS, choice.
+    pub algorithm: Option<&'static str>,
 }
 
 impl Default for SignOptions {
     fn default() -> Self {
-        Self { detached: false }
+        Self {
+            detached: false,
+            algorithm: None,
+        }
     }
 }
 
@@ -145,5 +151,6 @@ pub struct MessageInfo {
 pub const ALG_RSA_OAEP: &str = "smime-rsa-oaep-sha256";
 pub const ALG_X25519: &str = "smime-x25519";
 pub const ALG_RSA_PSS: &str = "smime-rsa-pss-sha256";
+pub const ALG_ED25519: &str = "smime-ed25519";
 pub const ALG_MLKEM_HYBRID: &str = "smime-mlkem768-x25519";
 pub const ALG_MLDSA65: &str = "pqc-mldsa65";

@@ -19,10 +19,32 @@ fn gen(profile: KeyProfile) -> GeneratedKey {
 fn classical_generate_inspect() {
     let key = gen(KeyProfile::Classical);
     let info = engine().inspect_key(&key.secret).unwrap();
-    assert!(info.identities.iter().any(|c| c.algorithm == ALG_RSA_OAEP));
     assert!(info.identities.iter().any(|c| c.algorithm == ALG_X25519));
-    assert!(info.identities.iter().any(|c| c.algorithm == ALG_RSA_PSS));
+    assert!(info.identities.iter().any(|c| c.algorithm == ALG_ED25519));
+    assert!(!info.identities.iter().any(|c| c.algorithm == ALG_RSA_OAEP));
+    assert!(!info.identities.iter().any(|c| c.algorithm == ALG_RSA_PSS));
     assert!(!info.is_pqc());
+}
+
+#[test]
+fn ed25519_sign_verify() {
+    let alice = gen(KeyProfile::Classical);
+    let p = engine();
+    let sig = p
+        .sign(
+            b"signed-ed25519",
+            &alice.secret,
+            None,
+            &SignOptions {
+                detached: false,
+                algorithm: Some(ALG_ED25519),
+            },
+        )
+        .unwrap();
+    let v = p.verify(b"signed-ed25519", &sig, &alice.public).unwrap();
+    assert_eq!(v.validity, SignatureValidity::CryptographicallyValid);
+    let bad = p.verify(b"other", &sig, &alice.public).unwrap();
+    assert_ne!(bad.validity, SignatureValidity::CryptographicallyValid);
 }
 
 #[test]

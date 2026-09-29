@@ -6,10 +6,10 @@ mod pqc;
 use scomm_smime_core::*;
 
 use bundle::KeyBundle;
-use cert::{fingerprint_of, parse_email, rsa_encrypt_entry, rsa_sign_entry, x25519_encrypt_entry};
+use cert::{ed25519_sign_entry, fingerprint_of, parse_email, x25519_encrypt_entry};
 use cms_envelop::{
     decrypt_with_bundle, encrypt_to_entries, inspect_cms, maybe_pem_cms, pem_pkcs7,
-    rsa_oaep_decrypt_raw, sign_mldsa, sign_pss, sign_pss_raw, verify_signature,
+    rsa_oaep_decrypt_raw, sign_ed25519, sign_mldsa, sign_pss, sign_pss_raw, verify_signature,
 };
 
 pub struct CmsSmime;
@@ -80,9 +80,8 @@ impl SmimeProvider for CmsSmime {
             options.userid.as_str()
         };
         let mut entries = vec![
-            rsa_encrypt_entry(userid)?,
             x25519_encrypt_entry()?,
-            rsa_sign_entry(userid)?,
+            ed25519_sign_entry(userid)?,
         ];
         if options.profile == KeyProfile::PqcCms {
             entries.push(pqc::hybrid_encrypt_entry()?);
@@ -107,14 +106,29 @@ impl SmimeProvider for CmsSmime {
         data: &[u8],
         private_key: &[u8],
         _passphrase: Option<&str>,
-        _options: &SignOptions,
+        options: &SignOptions,
     ) -> Result<Vec<u8>> {
         let bundle = KeyBundle::parse(private_key)?;
-        if let Some(pqc_sign) = bundle
-            .signing_entries()
-            .find(|e| e.alg.eq_ignore_ascii_case(ALG_MLDSA65))
-        {
-            return sign_mldsa(data, pqc_sign);
+        if options.algorithm == Some(ALG_ED25519) {
+            let entry = bundle
+                .signing_entries()
+                .find(|e| e.alg.eq_ignore_ascii_case(ALG_ED25519))
+                .ok_or(SmimeError::NoSuitableSigningKey)?;
+            return sign_ed25519(data, entry);
+        }
+        if options.algorithm.is_none() {
+            if let Some(pqc_sign) = bundle
+                .signing_entries()
+                .find(|e| e.alg.eq_ignore_ascii_case(ALG_MLDSA65))
+            {
+                return sign_mldsa(data, pqc_sign);
+            }
+            if let Some(ed) = bundle
+                .signing_entries()
+                .find(|e| e.alg.eq_ignore_ascii_case(ALG_ED25519))
+            {
+                return sign_ed25519(data, ed);
+            }
         }
         let rsa = bundle
             .signing_entries()
@@ -156,19 +170,19 @@ impl SmimeProvider for CmsSmime {
                 .find(|e| e.alg.contains("x25519") && !e.alg.contains("mlkem"))
                 .cloned();
             if multi {
-                if let Some(rsa) = rsa {
-                    chosen.push(rsa);
-                } else if let Some(x) = x {
+                if let Some(x) = x {
                     chosen.push(x);
                 } else if let Some(pqc) = pqc {
                     chosen.push(pqc);
+                } else if let Some(rsa) = rsa {
+                    chosen.push(rsa);
                 }
             } else if let Some(pqc) = pqc {
                 chosen.push(pqc);
-            } else if let Some(rsa) = rsa {
-                chosen.push(rsa);
             } else if let Some(x) = x {
                 chosen.push(x);
+            } else if let Some(rsa) = rsa {
+                chosen.push(rsa);
             }
         }
         if chosen.is_empty() {

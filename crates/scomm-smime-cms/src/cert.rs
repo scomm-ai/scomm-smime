@@ -4,6 +4,7 @@ use openssl::rsa::{Padding, Rsa};
 use openssl::sign::Signer;
 use ossl::derive::EcdhDerive;
 use ossl::pkey::{EccData, EvpPkey, EvpPkeyType, PkeyData};
+use ossl::signature::{OsslSignature, SigAlg, SigOp};
 use ossl::OsslSecret;
 use scomm_smime_core::*;
 use yasna::models::ObjectIdentifier;
@@ -20,6 +21,7 @@ pub fn parse_email(userid: &str) -> String {
     userid.trim().to_string()
 }
 
+#[allow(dead_code)] // Legacy RSA bundles still decrypt and sign.
 pub fn rsa_pkcs8(bits: u32) -> Result<Vec<u8>> {
     let key = Rsa::generate(bits).map_err(|e| SmimeError::Internal(format!("rsa generate: {e}")))?;
     key.private_key_to_der()
@@ -31,6 +33,7 @@ fn oid(slice: &[u64]) -> ObjectIdentifier {
 }
 
 /// Minimal self-signed v3 cert (CN + rfc822Name SAN, KU).
+#[allow(dead_code)]
 pub fn self_signed_rsa(
     userid: &str,
     pkcs8: &[u8],
@@ -261,6 +264,7 @@ let Ok(d) = hash(MessageDigest::sha256(), bytes) else {
     d.iter().map(|b| format!("{b:02X}")).collect()
 }
 
+#[allow(dead_code)]
 pub fn rsa_encrypt_entry(userid: &str) -> Result<KeyEntry> {
     let pkcs8 = rsa_pkcs8(2048)?;
     let cert = self_signed_rsa(userid, &pkcs8, true, false)?;
@@ -273,6 +277,7 @@ pub fn rsa_encrypt_entry(userid: &str) -> Result<KeyEntry> {
     })
 }
 
+#[allow(dead_code)]
 pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
     let pkcs8 = rsa_pkcs8(2048)?;
     let cert = self_signed_rsa(userid, &pkcs8, false, true)?;
@@ -283,6 +288,167 @@ pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
         spki_b64: String::new(),
         pkcs8_b64: Some(b64_encode(&pkcs8)),
     })
+}
+
+/// Ed25519 signing key. OpenSSL signs the certificate body directly
+/// (`id-Ed25519`, no digest parameters).
+pub fn ed25519_sign_entry(userid: &str) -> Result<KeyEntry> {
+    let key = PKey::generate_ed25519()
+        .map_err(|e| SmimeError::Internal(format!("ed25519 generate: {e}")))?;
+    let seed = key
+        .raw_private_key()
+        .map_err(|e| SmimeError::Internal(format!("ed25519 seed: {e}")))?;
+    let raw_public = key
+        .raw_public_key()
+        .map_err(|e| SmimeError::Internal(format!("ed25519 public: {e}")))?;
+    if seed.len() != 32 || raw_public.len() != 32 {
+        return Err(SmimeError::InvalidKey("ed25519".into()));
+    }
+    let spki = ed25519_spki(&raw_public);
+    let cert = self_signed_ed25519(userid, &seed, &spki)?;
+    Ok(KeyEntry {
+        alg: ALG_ED25519.to_string(),
+        purpose: "signing".into(),
+        cert_pem: cert,
+        spki_b64: b64_encode(&spki),
+        pkcs8_b64: Some(b64_encode(&seed)),
+    })
+}
+
+/// One-shot Ed25519 signature. OpenSSL 4 rejects `EVP_DigestSignUpdate` for this algorithm.
+pub fn ed25519_sign(seed: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    if seed.len() != 32 {
+        return Err(SmimeError::InvalidKey("ed25519 seed".into()));
+    }
+    let c = ossl::OsslContext::new_lib_ctx();
+    let mut key = EvpPkey::import(
+        &c,
+        EvpPkeyType::Ed25519,
+        PkeyData::Ecc(EccData {
+            pubkey: None,
+            prikey: Some(OsslSecret::from_slice(seed)),
+        }),
+    )
+    .map_err(|_| SmimeError::InvalidKey("ed25519 seed".into()))?;
+    let mut signer = OsslSignature::new(&c, SigOp::Sign, SigAlg::Ed25519, &mut key, None)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let mut signature = vec![0u8; 64];
+    let n = signer
+        .sign(data, Some(&mut signature))
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    signature.truncate(n);
+    Ok(signature)
+}
+
+pub fn ed25519_verify(raw_public: &[u8], data: &[u8], sig: &[u8]) -> bool {
+    if raw_public.len() != 32 || sig.len() != 64 {
+        return false;
+    }
+    let c = ossl::OsslContext::new_lib_ctx();
+    let Ok(mut key) = EvpPkey::import(
+        &c,
+        EvpPkeyType::Ed25519,
+        PkeyData::Ecc(EccData {
+            pubkey: Some(raw_public.to_vec()),
+            prikey: None,
+        }),
+    ) else {
+        return false;
+    };
+    let Ok(mut verifier) = OsslSignature::new(&c, SigOp::Verify, SigAlg::Ed25519, &mut key, None)
+    else {
+        return false;
+    };
+    verifier.verify(data, Some(sig)).is_ok()
+}
+
+pub fn ed25519_spki(raw32: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(44);
+    out.extend_from_slice(&[
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ]);
+    out.extend_from_slice(raw32);
+    out
+}
+
+fn self_signed_ed25519(userid: &str, seed: &[u8], spki: &[u8]) -> Result<String> {
+    let email = parse_email(userid);
+    let (cn, extensions) = subject_and_extensions(&email, true, false)?;
+    let sig_alg = oid(&[1, 3, 101, 112]);
+    let tbs = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_tagged(Tag::context(0), |w| {
+                w.write_u8(2);
+            });
+            w.next().write_u64(1);
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&sig_alg);
+            });
+            w.next().write_der(&cn);
+            w.next().write_sequence(|w| {
+                w.next().write_der(&generalized_time("20240101000000Z"));
+                w.next().write_der(&generalized_time("20340101000000Z"));
+            });
+            w.next().write_der(&cn);
+            w.next().write_der(spki);
+            w.next().write_tagged(Tag::context(3), |w| {
+                w.write_der(&extensions);
+            });
+        });
+    });
+    let sig = ed25519_sign(seed, &tbs)?;
+    let cert_der = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_der(&tbs);
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&sig_alg);
+            });
+            w.next().write_bitvec_bytes(&sig, sig.len() * 8);
+        });
+    });
+    Ok(pem::Pem::new("CERTIFICATE", cert_der).to_string())
+}
+
+fn subject_and_extensions(email: &str, sign: bool, encrypt: bool) -> Result<(Vec<u8>, Vec<u8>)> {
+    let mut ku_byte = 0u8;
+    if sign {
+        ku_byte |= 0x80;
+    }
+    if encrypt {
+        ku_byte |= 0x20;
+    }
+    let cn = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_set_of(|w| {
+                w.next().write_sequence(|w| {
+                    w.next().write_oid(&oid(&[2, 5, 4, 3]));
+                    w.next().write_utf8_string(email);
+                });
+            });
+        });
+    });
+    let san = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_tagged(Tag::context(1), |w| {
+                w.write_ia5_string(email);
+            });
+        });
+    });
+    let ku_ext = yasna::construct_der(|w| w.write_bitvec_bytes(&[ku_byte], 8));
+    let extensions = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&oid(&[2, 5, 29, 15]));
+                w.next().write_bool(true);
+                w.next().write_bytes(&ku_ext);
+            });
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&oid(&[2, 5, 29, 17]));
+                w.next().write_bytes(&san);
+            });
+        });
+    });
+    Ok((cn, extensions))
 }
 
 pub fn x25519_encrypt_entry() -> Result<KeyEntry> {

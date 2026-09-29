@@ -13,7 +13,10 @@ use yasna::models::ObjectIdentifier;
 use yasna::Tag;
 
 use crate::bundle::{b64_decode, KeyBundle, KeyEntry};
-use crate::cert::{rsa_from_pkcs8, x25519_dh, x25519_public, x25519_raw_from_spki_or_raw};
+use crate::cert::{
+    ed25519_sign, ed25519_verify, rsa_from_pkcs8, x25519_dh, x25519_public,
+    x25519_raw_from_spki_or_raw,
+};
 use crate::pqc;
 
 const OID_ENVELOPED: &[u64] = &[1, 2, 840, 113549, 1, 7, 3];
@@ -22,6 +25,7 @@ const OID_DATA: &[u64] = &[1, 2, 840, 113549, 1, 7, 1];
 const OID_RSA_OAEP: &[u64] = &[1, 2, 840, 113549, 1, 1, 7];
 const OID_AES256_CBC: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 1, 42];
 const OID_RSA_PSS: &[u64] = &[1, 2, 840, 113549, 1, 1, 10];
+const OID_ED25519: &[u64] = &[1, 3, 101, 112];
 const OID_X25519_ORI: &[u64] = &[1, 3, 101, 110];
 /// Scomm hybrid ML-KEM-768+X25519 CMS OtherRecipientInfo (until composite-KEM CMS is RFC).
 const OID_HYBRID_ORI: &[u64] = &[1, 3, 6, 1, 4, 1, 54392, 1, 1];
@@ -498,6 +502,29 @@ fn oaep_decrypt(sk: &PKey<Private>, ciphertext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+pub fn sign_ed25519(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
+    let sig_bytes = sign_ed25519_raw(data, entry)?;
+    let signed = yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_oid(&oid(OID_ED25519));
+            w.next().write_bytes(data);
+            w.next().write_bytes(&sig_bytes);
+        });
+    });
+    Ok(wrap_content_info(oid(OID_SIGNED), signed))
+}
+
+/// Raw Ed25519 signature over [data], with no pre-hash. The directory
+/// verifies these bytes directly for `smime-ed25519` proof of possession.
+pub fn sign_ed25519_raw(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
+    let encoded = entry
+        .pkcs8_b64
+        .as_ref()
+        .ok_or(SmimeError::NoSuitableSigningKey)?;
+    let seed = b64_decode(encoded)?;
+    ed25519_sign(&seed, data)
+}
+
 pub fn sign_pss(data: &[u8], entry: &KeyEntry) -> Result<Vec<u8>> {
     let sig_bytes = sign_pss_raw(data, entry)?;
     let signed = yasna::construct_der(|w| {
@@ -591,6 +618,26 @@ pub fn verify_signature(data: &[u8], signature: &[u8], public: &KeyBundle) -> Re
         }
     }
     let message = if inner_data.is_empty() { data } else { inner_data.as_slice() };
+    if alg == oid(OID_ED25519) {
+        for e in public
+            .signing_entries()
+            .filter(|e| e.alg.eq_ignore_ascii_case(ALG_ED25519))
+        {
+            if e.spki_b64.is_empty() {
+                continue;
+            }
+            if let Ok(spki) = b64_decode(&e.spki_b64) {
+                if spki.len() >= 32 && ed25519_verify(&spki[spki.len() - 32..], message, &sig) {
+                    return Ok(VerificationResult {
+                        validity: SignatureValidity::CryptographicallyValid,
+                    });
+                }
+            }
+        }
+        return Ok(VerificationResult {
+            validity: SignatureValidity::CryptographicallyInvalid,
+        });
+    }
     if alg == oid(OID_RSA_PSS) {
         for e in public.signing_entries() {
             if e.cert_pem.is_empty() {
