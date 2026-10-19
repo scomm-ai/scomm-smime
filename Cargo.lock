@@ -346,8 +346,8 @@ dependencies = [
 
 [[package]]
 name = "openssl-src"
-version = "300.99.0+4.1.0-beta1"
-source = "git+https://github.com/advforks/openssl-src-rs?rev=83ef638c16afda3c3fe9ebf3b7966f991176e35c#83ef638c16afda3c3fe9ebf3b7966f991176e35c"
+version = "300.99.0+4.1.0-beta2"
+source = "git+https://github.com/advforks/openssl-src-rs?rev=a9fb57d6879f0765c2790d0c67ee3607366357a7#a9fb57d6879f0765c2790d0c67ee3607366357a7"
 dependencies = [
  "cc",
 ]
