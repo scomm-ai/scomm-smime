@@ -106,3 +106,35 @@ fn classical_decrypt_without_pqc_bundle() {
     let pt = p.decrypt(&ct, &alice.secret, None).unwrap();
     assert_eq!(pt.plaintext, b"free");
 }
+
+#[test]
+fn x25519_multi_recipient_each_can_decrypt() {
+    let alice = gen(KeyProfile::Classical);
+    let bob = gen(KeyProfile::Classical);
+    let carol = gen(KeyProfile::Classical);
+    let p = engine();
+    let ct = p
+        .encrypt(
+            b"to all",
+            &[&alice.public, &bob.public, &carol.public],
+            &EncryptOptions { armored: false },
+        )
+        .unwrap();
+    for k in [&alice, &bob, &carol] {
+        assert_eq!(p.decrypt(&ct, &k.secret, None).unwrap().plaintext, b"to all");
+    }
+    let mallory = gen(KeyProfile::Classical);
+    assert!(p.decrypt(&ct, &mallory.secret, None).is_err());
+}
+
+#[test]
+fn pqc_and_classical_recipients_each_can_decrypt() {
+    let alice = gen(KeyProfile::PqcCms);
+    let bob = gen(KeyProfile::Classical);
+    let p = engine();
+    let ct = p
+        .encrypt(b"mixed", &[&alice.public, &bob.public], &EncryptOptions { armored: false })
+        .unwrap();
+    assert_eq!(p.decrypt(&ct, &alice.secret, None).unwrap().plaintext, b"mixed");
+    assert_eq!(p.decrypt(&ct, &bob.secret, None).unwrap().plaintext, b"mixed");
+}

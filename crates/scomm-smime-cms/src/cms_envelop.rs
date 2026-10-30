@@ -140,10 +140,10 @@ fn rsa_oaep_enveloped(plaintext: &[u8], cert_pems: &[&str]) -> Result<Vec<u8>> {
     Ok(wrap_content_info(oid(OID_ENVELOPED), enveloped))
 }
 
+/// One OtherRecipientInfo per recipient: (ORI type OID, payload).
 fn ori_enveloped(
     plaintext: &[u8],
-    ori_oid: &[u64],
-    ori_payload: &[u8],
+    oris: &[(&[u64], Vec<u8>)],
     cek: &[u8; 32],
 ) -> Result<Vec<u8>> {
     let (ct, iv) = aes_encrypt(cek, plaintext)?;
@@ -151,12 +151,14 @@ fn ori_enveloped(
         w.write_sequence(|w| {
             w.next().write_u8(4);
             w.next().write_set_of(|w| {
-                w.next().write_tagged(Tag::context(4), |w| {
-                    w.write_sequence(|w| {
-                        w.next().write_oid(&oid(ori_oid));
-                        w.next().write_bytes(ori_payload);
+                for (ori_oid, payload) in oris {
+                    w.next().write_tagged(Tag::context(4), |w| {
+                        w.write_sequence(|w| {
+                            w.next().write_oid(&oid(ori_oid));
+                            w.next().write_bytes(payload);
+                        });
                     });
-                });
+                }
             });
             w.next().write_sequence(|w| {
                 w.next().write_oid(&oid(OID_DATA));
@@ -173,35 +175,59 @@ fn ori_enveloped(
     Ok(wrap_content_info(oid(OID_ENVELOPED), enveloped))
 }
 
-fn x25519_enveloped(plaintext: &[u8], recipient_spki: &[u8]) -> Result<Vec<u8>> {
-    let mut cek = [0u8; 32];
-    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
-    let mut eph_secret = [0u8; 32];
-    rand_bytes(&mut eph_secret).map_err(|e| SmimeError::Internal(e.to_string()))?;
-    let eph_public = x25519_public(&eph_secret)?;
-    let their = x25519_raw_from_spki_or_raw(recipient_spki)?;
-    let shared = x25519_dh(&eph_secret, &their)?;
-    let mut wrapped = cek;
-    for (w, s) in wrapped.iter_mut().zip(shared.iter()) {
-        *w ^= s;
-    }
-    let mut payload = Vec::with_capacity(64);
-    payload.extend_from_slice(&eph_public);
-    payload.extend_from_slice(&wrapped);
-    ori_enveloped(plaintext, OID_X25519_ORI, &payload, &cek)
+pub(crate) const KEY_CHECK_LEN: usize = 8;
+
+/// Tag over a recipient's key-wrap mask. ORI recipients carry no identifier and
+/// the CEK wrap is a bare XOR, so a non-matching key only fails on AES-CBC
+/// padding, which still passes about 1 in 256 times and yields garbage. With
+/// several recipients every key meets several ORIs, so multi-recipient
+/// payloads append this tag and a non-matching ORI is skipped.
+fn key_check(mask: &[u8; 32]) -> Result<[u8; KEY_CHECK_LEN]> {
+    let mut input = b"scomm-smime ori key-check".to_vec();
+    input.extend_from_slice(mask);
+    let digest = openssl::hash::hash(MessageDigest::sha256(), &input)
+        .map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let mut tag = [0u8; KEY_CHECK_LEN];
+    tag.copy_from_slice(&digest[..KEY_CHECK_LEN]);
+    Ok(tag)
 }
 
-fn hybrid_enveloped(plaintext: &[u8], recipient: &KeyEntry) -> Result<Vec<u8>> {
-    let mut cek = [0u8; 32];
-    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
-    let (payload, kek_material) = pqc::encapsulate_hybrid(recipient)?;
-    let mut wrapped = cek;
-    for (w, s) in wrapped.iter_mut().zip(kek_material.iter()) {
-        *w ^= s;
+/// `wrapped || key_check` (multi-recipient) or `wrapped` (single, the
+/// original 64-byte X25519 layout older clients still parse).
+fn wrap_cek(cek: &[u8; 32], mask: &[u8; 32], with_check: bool) -> Result<Vec<u8>> {
+    let mut out: Vec<u8> = cek.iter().zip(mask.iter()).map(|(c, m)| c ^ m).collect();
+    if with_check {
+        out.extend_from_slice(&key_check(mask)?);
     }
-    let mut ori = payload;
-    ori.extend_from_slice(&wrapped);
-    ori_enveloped(plaintext, OID_HYBRID_ORI, &ori, &cek)
+    Ok(out)
+}
+
+/// Inverse of [wrap_cek]; `check` is empty for single-recipient payloads.
+pub(crate) fn unwrap_cek(wrapped: &[u8], mask: &[u8; 32], check: &[u8]) -> Result<[u8; 32]> {
+    if !check.is_empty() && check != key_check(mask)?.as_slice() {
+        return Err(SmimeError::WrongPrivateKey);
+    }
+    let mut cek: [u8; 32] = wrapped.try_into().map_err(|_| SmimeError::MalformedMessage)?;
+    for (c, m) in cek.iter_mut().zip(mask.iter()) {
+        *c ^= m;
+    }
+    Ok(cek)
+}
+
+fn x25519_ori(cek: &[u8; 32], recipient_spki: &[u8], with_check: bool) -> Result<Vec<u8>> {
+    let mut eph_secret = [0u8; 32];
+    rand_bytes(&mut eph_secret).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let their = x25519_raw_from_spki_or_raw(recipient_spki)?;
+    let shared = x25519_dh(&eph_secret, &their)?;
+    let mut payload = x25519_public(&eph_secret)?.to_vec();
+    payload.extend_from_slice(&wrap_cek(cek, &shared, with_check)?);
+    Ok(payload)
+}
+
+fn hybrid_ori(cek: &[u8; 32], recipient: &KeyEntry, with_check: bool) -> Result<Vec<u8>> {
+    let (mut payload, mask) = pqc::encapsulate_hybrid(recipient)?;
+    payload.extend_from_slice(&wrap_cek(cek, &mask, with_check)?);
+    Ok(payload)
 }
 
 pub fn encrypt_to_entries(plaintext: &[u8], entries: &[&KeyEntry]) -> Result<Vec<u8>> {
@@ -220,24 +246,33 @@ pub fn encrypt_to_entries(plaintext: &[u8], entries: &[&KeyEntry]) -> Result<Vec
         .filter(|e| !e.cert_pem.is_empty())
         .map(|e| e.cert_pem.as_str())
         .collect();
-    if enc.len() > 1 && !rsa_pems.is_empty() {
+    if !rsa_pems.is_empty() {
+        // KeyTransRecipientInfo and ORI recipients are not mixed: building
+        // either kind alone would leave the other recipients unable to read it.
+        if rsa_pems.len() != enc.len() {
+            return Err(SmimeError::UnsupportedAlgorithm(
+                "RSA recipients mixed with X25519/ML-KEM recipients".into(),
+            ));
+        }
         return rsa_oaep_enveloped(plaintext, &rsa_pems);
     }
-    let entry = enc[0];
-    if entry.alg.eq_ignore_ascii_case(ALG_MLKEM_HYBRID) || is_pqc_catalog(&entry.alg) {
-        return hybrid_enveloped(plaintext, entry);
-    }
-    if entry.alg.eq_ignore_ascii_case(ALG_RSA_OAEP) || entry.alg.contains("rsa-oaep") {
-        if entry.cert_pem.is_empty() {
+    let mut cek = [0u8; 32];
+    rand_bytes(&mut cek).map_err(|e| SmimeError::Internal(e.to_string()))?;
+    let with_check = enc.len() > 1;
+    let mut oris: Vec<(&[u64], Vec<u8>)> = Vec::with_capacity(enc.len());
+    for entry in &enc {
+        if entry.alg.eq_ignore_ascii_case(ALG_MLKEM_HYBRID) || is_pqc_catalog(&entry.alg) {
+            oris.push((OID_HYBRID_ORI, hybrid_ori(&cek, entry, with_check)?));
+        } else if entry.alg.eq_ignore_ascii_case(ALG_X25519) {
+            let spki = b64_decode(&entry.spki_b64)?;
+            oris.push((OID_X25519_ORI, x25519_ori(&cek, &spki, with_check)?));
+        } else if entry.alg.contains("rsa") {
             return Err(SmimeError::InvalidKey("RSA cert PEM".into()));
+        } else {
+            return Err(SmimeError::UnsupportedAlgorithm(entry.alg.clone()));
         }
-        return rsa_oaep_enveloped(plaintext, &[entry.cert_pem.as_str()]);
     }
-    if entry.alg.eq_ignore_ascii_case(ALG_X25519) {
-        let spki = b64_decode(&entry.spki_b64)?;
-        return x25519_enveloped(plaintext, &spki);
-    }
-    Err(SmimeError::UnsupportedAlgorithm(entry.alg.clone()))
+    ori_enveloped(plaintext, &oris, &cek)
 }
 
 fn parse_content_info(cms: &[u8]) -> Result<(ObjectIdentifier, Vec<u8>)> {
@@ -322,7 +357,10 @@ pub fn decrypt_with_bundle(cms: &[u8], bundle: &KeyBundle) -> Result<DecryptResu
         }
         return Err(last.unwrap_or(SmimeError::WrongPrivateKey));
     }
-    if info.algorithm == ALG_X25519 {
+    // A multi-recipient message may hold X25519 and hybrid ORIs side by side,
+    // so try each kind present instead of only the one `inspect_cms` labels.
+    let has_x25519 = contains_oid(&der, OID_X25519_ORI);
+    if has_x25519 {
         for e in bundle.encryption_entries().filter(|e| e.alg == ALG_X25519) {
             if let Some(pkcs8) = e.pkcs8_b64.as_ref() {
                 let raw = b64_decode(pkcs8)?;
@@ -338,7 +376,6 @@ pub fn decrypt_with_bundle(cms: &[u8], bundle: &KeyBundle) -> Result<DecryptResu
                 }
             }
         }
-        return Err(SmimeError::WrongPrivateKey);
     }
     if info.pqc || info.algorithm == ALG_MLKEM_HYBRID {
         for e in bundle
@@ -352,6 +389,9 @@ pub fn decrypt_with_bundle(cms: &[u8], bundle: &KeyBundle) -> Result<DecryptResu
                 });
             }
         }
+        return Err(SmimeError::WrongPrivateKey);
+    }
+    if has_x25519 {
         return Err(SmimeError::WrongPrivateKey);
     }
     Err(SmimeError::UnsupportedAlgorithm(info.algorithm))
@@ -427,39 +467,45 @@ fn decrypt_rsa_oaep(cms: &[u8], sk: &PKey<Private>) -> Result<Vec<u8>> {
 
 fn decrypt_x25519(cms: &[u8], sk: &[u8; 32]) -> Result<Vec<u8>> {
     let (recip, iv, ct) = read_enveloped_parts(cms)?;
-    let payload = extract_ori_payload(&recip)?;
-    if payload.len() != 64 {
-        return Err(SmimeError::MalformedMessage);
+    for payload in extract_ori_payloads(&recip, OID_X25519_ORI)? {
+        if payload.len() != 64 && payload.len() != 64 + KEY_CHECK_LEN {
+            continue;
+        }
+        let eph: [u8; 32] = payload[..32]
+            .try_into()
+            .map_err(|_| SmimeError::MalformedMessage)?;
+        let shared = x25519_dh(sk, &eph)?;
+        let Ok(cek) = unwrap_cek(&payload[32..64], &shared, &payload[64..]) else {
+            continue;
+        };
+        if let Ok(pt) = aes_decrypt(&cek, &iv, &ct) {
+            return Ok(pt);
+        }
     }
-    let eph: [u8; 32] = payload[..32]
-        .try_into()
-        .map_err(|_| SmimeError::MalformedMessage)?;
-    let mut wrapped = [0u8; 32];
-    wrapped.copy_from_slice(&payload[32..]);
-    let shared = x25519_dh(sk, &eph)?;
-    let mut cek = wrapped;
-    for (w, s) in cek.iter_mut().zip(shared.iter()) {
-        *w ^= s;
-    }
-    aes_decrypt(&cek, &iv, &ct)
+    Err(SmimeError::WrongPrivateKey)
 }
 
-pub fn extract_ori_payload(recip_der: &[u8]) -> Result<Vec<u8>> {
-    let mut payload = None;
+/// Payloads of every OtherRecipientInfo of type [ori_oid], one per recipient.
+fn extract_ori_payloads(recip_der: &[u8], ori_oid: &[u64]) -> Result<Vec<Vec<u8>>> {
+    let wanted = oid(ori_oid);
+    let mut payloads = Vec::new();
     yasna::parse_der(recip_der, |r| {
         r.read_set_of(|r| {
-            let bytes = r.read_tagged(Tag::context(4), |r| {
-                r.read_sequence(|r| {
-                    let _oid = r.next().read_oid()?;
-                    r.next().read_bytes()
-                })
+            let (ori, bytes) = r.read_tagged(Tag::context(4), |r| {
+                r.read_sequence(|r| Ok((r.next().read_oid()?, r.next().read_bytes()?)))
             })?;
-            payload = Some(bytes);
+            if ori == wanted {
+                payloads.push(bytes);
+            }
             Ok(())
         })
     })
     .map_err(|_| SmimeError::MalformedMessage)?;
-    payload.ok_or(SmimeError::MalformedMessage)
+    Ok(payloads)
+}
+
+pub(crate) fn hybrid_ori_payloads(recip_der: &[u8]) -> Result<Vec<Vec<u8>>> {
+    extract_ori_payloads(recip_der, OID_HYBRID_ORI)
 }
 
 pub fn extract_ori_iv_ct(cms: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {

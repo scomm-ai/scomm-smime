@@ -8,7 +8,9 @@ use scomm_smime_core::*;
 
 use crate::bundle::{b64_decode, b64_encode, KeyEntry};
 use crate::cert::{x25519_dh, x25519_public, x25519_raw_from_spki_or_raw};
-use crate::cms_envelop::{aes_decrypt_pub, extract_ori_iv_ct, extract_ori_payload};
+use crate::cms_envelop::{
+    aes_decrypt_pub, extract_ori_iv_ct, hybrid_ori_payloads, unwrap_cek, KEY_CHECK_LEN,
+};
 
 const MLKEM_CT_LEN: usize = 1088;
 const MLKEM_EK_LEN: usize = 1184;
@@ -180,27 +182,31 @@ fn hybrid_secret(entry: &KeyEntry) -> Result<(Vec<u8>, [u8; 32])> {
 pub fn decapsulate_and_decrypt(entry: &KeyEntry, cms: &[u8]) -> Result<Vec<u8>> {
     let (kem_seed, x_seed) = hybrid_secret(entry)?;
     let (recip, iv, ct) = extract_ori_iv_ct(cms)?;
-    let payload = extract_ori_payload(&recip)?;
-    if payload.len() < MLKEM_CT_LEN + 32 + 32 {
-        return Err(SmimeError::MalformedMessage);
+    for payload in hybrid_ori_payloads(&recip)? {
+        let wrap_end = MLKEM_CT_LEN + 64;
+        if payload.len() != wrap_end && payload.len() != wrap_end + KEY_CHECK_LEN {
+            continue;
+        }
+        let eph: [u8; 32] = payload[MLKEM_CT_LEN..MLKEM_CT_LEN + 32]
+            .try_into()
+            .map_err(|_| SmimeError::MalformedMessage)?;
+        let Ok(ss) = mlkem_decaps(&kem_seed, &payload[..MLKEM_CT_LEN]) else {
+            continue;
+        };
+        let shared_x = x25519_dh(&x_seed, &eph)?;
+        let mut concat = Vec::with_capacity(64);
+        concat.extend_from_slice(&ss);
+        concat.extend_from_slice(&shared_x);
+        let mask = sha256_32(&concat)?;
+        let Ok(cek) = unwrap_cek(&payload[MLKEM_CT_LEN + 32..wrap_end], &mask, &payload[wrap_end..])
+        else {
+            continue;
+        };
+        if let Ok(pt) = aes_decrypt_pub(&cek, &iv, &ct) {
+            return Ok(pt);
+        }
     }
-    let eph: [u8; 32] = payload[MLKEM_CT_LEN..MLKEM_CT_LEN + 32]
-        .try_into()
-        .map_err(|_| SmimeError::MalformedMessage)?;
-    let wrapped: [u8; 32] = payload[MLKEM_CT_LEN + 32..MLKEM_CT_LEN + 64]
-        .try_into()
-        .map_err(|_| SmimeError::MalformedMessage)?;
-    let ss = mlkem_decaps(&kem_seed, &payload[..MLKEM_CT_LEN])?;
-    let shared_x = x25519_dh(&x_seed, &eph)?;
-    let mut concat = Vec::with_capacity(64);
-    concat.extend_from_slice(&ss);
-    concat.extend_from_slice(&shared_x);
-    let mask = sha256_32(&concat)?;
-    let mut cek = wrapped;
-    for (w, s) in cek.iter_mut().zip(mask.iter()) {
-        *w ^= s;
-    }
-    aes_decrypt_pub(&cek, &iv, &ct)
+    Err(SmimeError::WrongPrivateKey)
 }
 
 pub fn pop_hybrid(
