@@ -17,4 +17,4 @@ publish = false
 scomm-smime-core = { path = "crates/scomm-smime-core" }
 
 [patch.crates-io]
-openssl-src = { git = "https://github.com/advforks/openssl-src-rs", rev = "a9fb57d6879f0765c2790d0c67ee3607366357a7" }
+openssl-src = { git = "https://github.com/advforks/openssl-src-rs", rev = "1883835790f36abf04aa4756806e3cebadff3ded" }
