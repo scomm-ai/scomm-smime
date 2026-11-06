@@ -3,15 +3,46 @@ name: Tests
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "prebuilt/**"
   pull_request:
   workflow_dispatch:
+
+env:
+  OPENSSL_VERSION: "4.1.0"
+  OPENSSL_SHA256: 50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Interop tests fail instead of skipping without an OpenSSL 4.1 CLI.
+      SCOMM_INTEROP_REQUIRE_TOOLS: "1"
+      SCOMM_OPENSSL_CLI: ${{ github.workspace }}/.openssl-cli/bin/openssl
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked --workspace
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - uses: actions/cache@v4
+        id: openssl-cli
+        with:
+          path: .openssl-cli
+          key: openssl-cli-${{ runner.os }}-${{ env.OPENSSL_SHA256 }}
+      - name: Build the OpenSSL CLI
+        if: steps.openssl-cli.outputs.cache-hit != 'true'
+        run: |
+          name="openssl-$OPENSSL_VERSION"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/openssl/openssl/releases/download/$name/$name.tar.gz"
+          echo "$OPENSSL_SHA256  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/$name"
+          prefix="$GITHUB_WORKSPACE/.openssl-cli"
+          ./Configure no-shared no-tests no-docs --prefix="$prefix" --openssldir="$prefix/ssl" --libdir=lib
+          make -j"$(nproc)"
+          make install_sw install_ssldirs
+      - run: cargo test --locked --workspace -- --nocapture
