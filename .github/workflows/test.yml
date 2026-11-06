@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - "prebuilt/**"
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
