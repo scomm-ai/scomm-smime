@@ -330,6 +330,7 @@ pub unsafe extern "C" fn scomm_smime_inspect_message(
             "encrypted": info.encrypted,
             "signed": info.signed,
             "pqc": info.pqc,
+            "classical_recipient": info.classical_recipient,
             "algorithm": info.algorithm,
         })
         .to_string();

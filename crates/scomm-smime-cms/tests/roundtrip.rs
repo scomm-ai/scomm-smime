@@ -138,3 +138,32 @@ fn pqc_and_classical_recipients_each_can_decrypt() {
     assert_eq!(p.decrypt(&ct, &alice.secret, None).unwrap().plaintext, b"mixed");
     assert_eq!(p.decrypt(&ct, &bob.secret, None).unwrap().plaintext, b"mixed");
 }
+
+#[test]
+fn several_pqc_recipients_stay_post_quantum() {
+    let alice = gen(KeyProfile::PqcCms);
+    let bob = gen(KeyProfile::PqcCms);
+    let p = engine();
+    let ct = p
+        .encrypt(b"pq only", &[&alice.public, &bob.public], &EncryptOptions { armored: false })
+        .unwrap();
+    let info = p.inspect_message(&ct).unwrap();
+    assert!(info.pqc);
+    assert!(!info.classical_recipient);
+    for k in [&alice, &bob] {
+        assert_eq!(p.decrypt(&ct, &k.secret, None).unwrap().plaintext, b"pq only");
+    }
+}
+
+#[test]
+fn inspect_reports_a_classical_recipient_beside_a_pqc_one() {
+    let alice = gen(KeyProfile::PqcCms);
+    let bob = gen(KeyProfile::Classical);
+    let p = engine();
+    let ct = p
+        .encrypt(b"mixed", &[&alice.public, &bob.public], &EncryptOptions { armored: false })
+        .unwrap();
+    let info = p.inspect_message(&ct).unwrap();
+    assert!(info.pqc);
+    assert!(info.classical_recipient);
+}

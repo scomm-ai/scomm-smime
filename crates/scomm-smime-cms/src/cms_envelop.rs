@@ -313,6 +313,7 @@ pub fn inspect_cms(cms: &[u8]) -> Result<MessageInfo> {
         encrypted: enveloped,
         signed,
         pqc,
+        classical_recipient: enveloped && contains_oid(&der, OID_X25519_ORI),
         algorithm,
     })
 }

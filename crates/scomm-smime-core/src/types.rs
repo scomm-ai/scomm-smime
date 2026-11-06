@@ -145,6 +145,10 @@ pub struct MessageInfo {
     pub encrypted: bool,
     pub signed: bool,
     pub pqc: bool,
+    /// An enveloped message also wraps the content key to a classical
+    /// recipient, so it is not post-quantum confidential and a classical key
+    /// may open it.
+    pub classical_recipient: bool,
     pub algorithm: String,
 }
 

@@ -101,12 +101,16 @@ class SmimeMessageInspect {
     required this.encrypted,
     required this.signed,
     required this.pqc,
+    required this.classicalRecipient,
     required this.algorithm,
   });
 
   final bool encrypted;
   final bool signed;
   final bool pqc;
+
+  /// The content key is also wrapped to a classical recipient.
+  final bool classicalRecipient;
   final String algorithm;
 
   factory SmimeMessageInspect.fromJson(Map<String, dynamic> json) {
@@ -114,6 +118,7 @@ class SmimeMessageInspect {
       encrypted: json['encrypted'] as bool? ?? false,
       signed: json['signed'] as bool? ?? false,
       pqc: json['pqc'] as bool? ?? false,
+      classicalRecipient: json['classical_recipient'] as bool? ?? false,
       algorithm: json['algorithm'] as String? ?? '',
     );
   }

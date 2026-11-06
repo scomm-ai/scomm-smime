@@ -154,7 +154,6 @@ impl SmimeProvider for CmsSmime {
         options: &EncryptOptions,
     ) -> Result<Vec<u8>> {
         let mut chosen: Vec<crate::bundle::KeyEntry> = Vec::new();
-        let multi = recipient_public_keys.len() > 1;
         for pk in recipient_public_keys {
             let bundle = KeyBundle::parse(pk)?;
             let pqc = bundle
@@ -169,15 +168,9 @@ impl SmimeProvider for CmsSmime {
                 .encryption_entries()
                 .find(|e| e.alg.contains("x25519") && !e.alg.contains("mlkem"))
                 .cloned();
-            if multi {
-                if let Some(x) = x {
-                    chosen.push(x);
-                } else if let Some(pqc) = pqc {
-                    chosen.push(pqc);
-                } else if let Some(rsa) = rsa {
-                    chosen.push(rsa);
-                }
-            } else if let Some(pqc) = pqc {
+            // A recipient with a post-quantum key never gets a classical copy:
+            // one classical wrap of the CEK makes the whole message classical.
+            if let Some(pqc) = pqc {
                 chosen.push(pqc);
             } else if let Some(x) = x {
                 chosen.push(x);
