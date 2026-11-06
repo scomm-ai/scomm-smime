@@ -117,6 +117,30 @@ typedef _SignD = int Function(
   ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
   ffi.Pointer<ffi.Size>,
 );
+typedef _SignAlgN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _SignAlgD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
 typedef _VerifyN = ffi.Int32 Function(
   ffi.Pointer<ffi.Uint8>,
   ffi.Size,
@@ -202,7 +226,7 @@ class ScommSmime {
         _decrypt = _lib.lookupFunction<_DecryptN, _DecryptD>(
           'scomm_smime_decrypt',
         ),
-        _sign = _lib.lookupFunction<_SignN, _SignD>('scomm_smime_sign'),
+        _sign = _lib.lookupFunction<_SignAlgN, _SignAlgD>('scomm_smime_sign'),
         _verify = _lib.lookupFunction<_VerifyN, _VerifyD>(
           'scomm_smime_verify',
         ),
@@ -239,7 +263,7 @@ class ScommSmime {
   final _InspectD _exportPublic;
   final _EncryptD _encrypt;
   final _DecryptD _decrypt;
-  final _SignD _sign;
+  final _SignAlgD _sign;
   final _VerifyD _verify;
   final _InspectD _inspectMessage;
   final _TestPassD _testPass;
@@ -366,15 +390,19 @@ class ScommSmime {
     });
   }
 
+  /// [algorithm] is the catalog name of the bundle's signing key to use, such
+  /// as `smime-ed25519` or `pqc-mldsa65`.
   Uint8List sign({
     required List<int> data,
     required List<int> privateKey,
+    required String algorithm,
     String passphrase = '',
   }) {
     return using((arena) {
       final d = _copy(arena, data);
       final sk = _copy(arena, privateKey);
       final pass = _copy(arena, utf8.encode(passphrase));
+      final alg = _copy(arena, utf8.encode(algorithm));
       final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
       final outLen = arena<ffi.Size>();
       final code = _sign(
@@ -384,6 +412,8 @@ class ScommSmime {
         sk.len,
         pass.ptr,
         pass.len,
+        alg.ptr,
+        alg.len,
         outPtr,
         outLen,
       );

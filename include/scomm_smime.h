@@ -42,10 +42,12 @@ int32_t scomm_smime_decrypt(
     const uint8_t *passphrase, size_t passphrase_len,
     uint8_t **out, size_t *out_len);
 
+/* algorithm: catalog name of the signing key to use, such as "smime-ed25519". */
 int32_t scomm_smime_sign(
     const uint8_t *data, size_t data_len,
     const uint8_t *private_key, size_t private_key_len,
     const uint8_t *passphrase, size_t passphrase_len,
+    const uint8_t *algorithm, size_t algorithm_len,
     uint8_t **out, size_t *out_len);
 
 int32_t scomm_smime_verify(

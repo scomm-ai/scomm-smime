@@ -109,32 +109,21 @@ impl SmimeProvider for CmsSmime {
         options: &SignOptions,
     ) -> Result<Vec<u8>> {
         let bundle = KeyBundle::parse(private_key)?;
-        if options.algorithm == Some(ALG_ED25519) {
-            let entry = bundle
-                .signing_entries()
-                .find(|e| e.alg.eq_ignore_ascii_case(ALG_ED25519))
-                .ok_or(SmimeError::NoSuitableSigningKey)?;
-            return sign_ed25519(data, entry);
-        }
-        if options.algorithm.is_none() {
-            if let Some(pqc_sign) = bundle
-                .signing_entries()
-                .find(|e| e.alg.eq_ignore_ascii_case(ALG_MLDSA65))
-            {
-                return sign_mldsa(data, pqc_sign);
-            }
-            if let Some(ed) = bundle
-                .signing_entries()
-                .find(|e| e.alg.eq_ignore_ascii_case(ALG_ED25519))
-            {
-                return sign_ed25519(data, ed);
-            }
-        }
-        let rsa = bundle
+        let sign_entry: fn(&[u8], &crate::bundle::KeyEntry) -> Result<Vec<u8>> =
+            match options.algorithm {
+                ALG_ED25519 => sign_ed25519,
+                ALG_MLDSA65 => sign_mldsa,
+                ALG_RSA_PSS => sign_pss,
+                other => return Err(SmimeError::UnsupportedAlgorithm(other.to_string())),
+            };
+        let entry = bundle
             .signing_entries()
-            .find(|e| e.alg.contains("rsa"))
+            .find(|e| {
+                e.alg.eq_ignore_ascii_case(options.algorithm)
+                    || (options.algorithm == ALG_RSA_PSS && e.alg.contains("rsa"))
+            })
             .ok_or(SmimeError::NoSuitableSigningKey)?;
-        sign_pss(data, rsa)
+        sign_entry(data, entry)
     }
 
     fn verify(

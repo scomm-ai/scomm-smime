@@ -37,7 +37,7 @@ fn ed25519_sign_verify() {
             None,
             &SignOptions {
                 detached: false,
-                algorithm: Some(ALG_ED25519),
+                algorithm: ALG_ED25519,
             },
         )
         .unwrap();
@@ -83,17 +83,30 @@ fn pqc_encrypt_decrypt_roundtrip() {
     assert_eq!(pt.plaintext, b"pqc cms");
 }
 
+/// A classical key row and a PQC key row share one bundle. Each must sign with
+/// its own key: a classical row that signed with ML-DSA would skip the add-on
+/// check and fail against the Ed25519 key the sender published.
 #[test]
-fn rsa_pss_sign_verify() {
-    let alice = gen(KeyProfile::Classical);
+fn pqc_bundle_signs_with_the_named_algorithm() {
+    let alice = gen(KeyProfile::PqcCms);
     let p = engine();
-    let sig = p
-        .sign(b"signed", &alice.secret, None, &SignOptions::default())
-        .unwrap();
-    let v = p.verify(b"signed", &sig, &alice.public).unwrap();
-    assert_eq!(v.validity, SignatureValidity::CryptographicallyValid);
-    let bad = p.verify(b"other", &sig, &alice.public).unwrap();
-    assert_ne!(bad.validity, SignatureValidity::CryptographicallyValid);
+    for (algorithm, pqc) in [(ALG_ED25519, false), (ALG_MLDSA65, true)] {
+        let options = SignOptions { detached: false, algorithm };
+        let sig = p.sign(b"signed", &alice.secret, None, &options).unwrap();
+        assert_eq!(p.inspect_message(&sig).unwrap().pqc, pqc, "{algorithm}");
+        let v = p.verify(b"signed", &sig, &alice.public).unwrap();
+        assert_eq!(v.validity, SignatureValidity::CryptographicallyValid);
+    }
+}
+
+#[test]
+fn sign_refuses_an_algorithm_the_bundle_does_not_hold() {
+    let alice = gen(KeyProfile::Classical);
+    let options = SignOptions { detached: false, algorithm: ALG_MLDSA65 };
+    assert!(matches!(
+        engine().sign(b"signed", &alice.secret, None, &options),
+        Err(SmimeError::NoSuitableSigningKey)
+    ));
 }
 
 #[test]

@@ -95,18 +95,9 @@ pub struct GeneratedKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignOptions {
     pub detached: bool,
-    /// Catalog name such as [`ALG_ED25519`]. `None` keeps the existing
-    /// ML-DSA, then RSA-PSS, choice.
-    pub algorithm: Option<&'static str>,
-}
-
-impl Default for SignOptions {
-    fn default() -> Self {
-        Self {
-            detached: false,
-            algorithm: None,
-        }
-    }
+    /// [`ALG_ED25519`], [`ALG_MLDSA65`] or [`ALG_RSA_PSS`]. A bundle can hold
+    /// several signing keys, so the caller always names the one it means.
+    pub algorithm: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

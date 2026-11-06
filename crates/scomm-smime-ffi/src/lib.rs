@@ -87,6 +87,13 @@ fn run(f: impl FnOnce() -> Result<i32>) -> i32 {
     }
 }
 
+fn sign_algorithm(name: &[u8]) -> Result<&'static str> {
+    [ALG_ED25519, ALG_MLDSA65, ALG_RSA_PSS]
+        .into_iter()
+        .find(|alg| alg.as_bytes() == name)
+        .ok_or_else(|| SmimeError::UnsupportedAlgorithm(String::from_utf8_lossy(name).into_owned()))
+}
+
 fn parse_recipients(buf: &[u8]) -> Result<Vec<Vec<u8>>> {
     if buf.len() < 4 {
         return Err(SmimeError::InvalidArgument("recipients buffer".into()));
@@ -275,6 +282,8 @@ pub unsafe extern "C" fn scomm_smime_sign(
     private_key_len: usize,
     passphrase: *const u8,
     passphrase_len: usize,
+    algorithm: *const u8,
+    algorithm_len: usize,
     out: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
@@ -285,9 +294,14 @@ pub unsafe extern "C" fn scomm_smime_sign(
     } else {
         Some(String::from_utf8_lossy(read_slice(passphrase, passphrase_len)).into_owned())
     };
+    let algorithm = read_slice(algorithm, algorithm_len).to_vec();
     run(|| {
         clear_error();
-        let sig = engine().sign(&data, &private_key, pass.as_deref(), &SignOptions::default())?;
+        let options = SignOptions {
+            detached: false,
+            algorithm: sign_algorithm(&algorithm)?,
+        };
+        let sig = engine().sign(&data, &private_key, pass.as_deref(), &options)?;
         unsafe { write_buf(&sig, out, out_len) };
         Ok(0)
     })
