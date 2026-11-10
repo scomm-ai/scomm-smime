@@ -17,6 +17,10 @@ pub struct KeyEntry {
     pub spki_b64: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pkcs8_b64: Option<String>,
+    /// Key IDs this entry had before it gained a certificate (task 3.4), so
+    /// references to the old ID still resolve. Additive; absent when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_key_ids: Vec<String>,
 }
 
 impl KeyBundle {
@@ -32,6 +36,7 @@ impl KeyBundle {
                     cert_pem: e.cert_pem.clone(),
                     spki_b64: e.spki_b64.clone(),
                     pkcs8_b64: None,
+                    legacy_key_ids: e.legacy_key_ids.clone(),
                 })
                 .collect(),
         };
@@ -64,6 +69,7 @@ impl KeyBundle {
                     } else {
                         None
                     },
+                    legacy_key_ids: Vec::new(),
                 }],
             });
         }

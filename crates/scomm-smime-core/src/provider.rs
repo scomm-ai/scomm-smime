@@ -23,6 +23,21 @@ pub trait SmimeProvider: Send + Sync {
 
     fn verify(&self, data: &[u8], signature: &[u8], public_key: &[u8]) -> Result<VerificationResult>;
 
+    /// Detached signature verdict (`design.md` "Trust model"). `public_key`
+    /// is a bundle of keys already held for the sender: needed for S0, and
+    /// used for S1 only when the signature carries no certificate. `sender`
+    /// is the From address for the e-mail match.
+    fn verify_detached(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        public_key: Option<&[u8]>,
+        sender: Option<&str>,
+    ) -> Result<SignatureVerdict> {
+        let _ = (data, signature, public_key, sender);
+        Err(SmimeError::UnsupportedAlgorithm("signature verdict".into()))
+    }
+
     fn encrypt(
         &self,
         plaintext: &[u8],

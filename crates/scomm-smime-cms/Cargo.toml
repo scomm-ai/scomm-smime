@@ -9,11 +9,11 @@ description = "CMS/X.509 backend for scomm-smime-core. Classical RSA/X25519 plus
 [dependencies]
 scomm-smime-core.workspace = true
 base64 = "0.22"
+foreign-types = "0.3"
 openssl = { version = "0.10.78", features = ["vendored"] }
 openssl-sys = { version = "0.9.114", features = ["vendored"] }
 ossl = { version = "1.5.2", default-features = false, features = ["openssl-sys"] }
 pem = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-x509-parser = "0.16"
 yasna = "0.5"

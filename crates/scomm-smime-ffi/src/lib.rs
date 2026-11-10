@@ -5,7 +5,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
 
-use scomm_smime_cms::CmsSmime;
+use scomm_smime_cms::{
+    add_mldsa_certificates, cert_info, check_certificate, set_trust_roots, CmsSmime,
+};
 use scomm_smime_core::*;
 use serde_json::json;
 
@@ -59,6 +61,7 @@ fn key_info_json(info: &SmimeKeyInfo) -> String {
                 "usage": if c.usage == KeyUsage::Signing { "signing" } else { "encryption" },
                 "has_secret": c.has_secret,
                 "pqc": c.is_pqc(),
+                "legacy_key_ids": c.legacy_key_ids,
             })
         })
         .collect();
@@ -88,7 +91,7 @@ fn run(f: impl FnOnce() -> Result<i32>) -> i32 {
 }
 
 fn sign_algorithm(name: &[u8]) -> Result<&'static str> {
-    [ALG_ED25519, ALG_MLDSA65, ALG_RSA_PSS]
+    [ALG_ED25519, ALG_MLDSA65, ALG_RSA_PSS, ALG_RSA_PKCS1]
         .into_iter()
         .find(|alg| alg.as_bytes() == name)
         .ok_or_else(|| SmimeError::UnsupportedAlgorithm(String::from_utf8_lossy(name).into_owned()))
@@ -108,12 +111,61 @@ fn parse_recipients(buf: &[u8]) -> Result<Vec<Vec<u8>>> {
         let len = u32::from_be_bytes(buf[i..i + 4].try_into().unwrap()) as usize;
         i += 4;
         if i + len > buf.len() {
-            return Err(SmimeError::InvalidArgument("truncated recipient key".into()));
+            return Err(SmimeError::InvalidArgument(
+                "truncated recipient key".into(),
+            ));
         }
         out.push(buf[i..i + len].to_vec());
         i += len;
     }
     Ok(out)
+}
+
+unsafe fn read_opt_str(ptr: *const u8, len: usize) -> Option<String> {
+    if ptr.is_null() || len == 0 {
+        None
+    } else {
+        Some(String::from_utf8_lossy(read_slice(ptr, len)).into_owned())
+    }
+}
+
+fn validity_name(v: SignatureValidity) -> &'static str {
+    match v {
+        SignatureValidity::CryptographicallyValid => "valid",
+        SignatureValidity::CryptographicallyInvalid => "invalid",
+        SignatureValidity::UnknownSigner => "unknown-signer",
+        SignatureValidity::MalformedSignature => "malformed",
+        SignatureValidity::UnsupportedAlgorithm => "unsupported",
+    }
+}
+
+fn chain_name(c: ChainStatus) -> &'static str {
+    match c {
+        ChainStatus::TrustedRoot => "trusted-root",
+        ChainStatus::UntrustedRoot => "untrusted-root",
+        ChainStatus::NoChain => "no-chain",
+        ChainStatus::Expired => "expired",
+        ChainStatus::NotYetValid => "not-yet-valid",
+        ChainStatus::WrongPurpose => "wrong-purpose",
+    }
+}
+
+/// Verdict JSON (`design.md` "Trust model", "Verdict").
+fn verdict_json(v: &SignatureVerdict) -> String {
+    json!({
+        "validity": validity_name(v.validity),
+        "format": v.format.map(|f| match f {
+            SignatureFormat::S1 => "s1",
+            SignatureFormat::S0 => "s0",
+        }),
+        "signer_fingerprint": v.signer_fingerprint,
+        "signer_cert_pem": v.signer_cert_pem,
+        "chain": chain_name(v.chain),
+        "email_match": v.email_match,
+        "weak_algorithm": v.weak_algorithm,
+        "revocation": "not-checked",
+    })
+    .to_string()
 }
 
 #[no_mangle]
@@ -130,10 +182,7 @@ pub unsafe extern "C" fn scomm_smime_buffer_free(ptr: *mut u8, len: usize) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn scomm_smime_last_error(
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
+pub unsafe extern "C" fn scomm_smime_last_error(out: *mut *mut u8, out_len: *mut usize) -> i32 {
     let msg = LAST_ERROR.with(|slot| slot.borrow().clone().unwrap_or_default());
     write_buf(msg.as_bytes(), out, out_len);
     0
@@ -193,7 +242,11 @@ pub unsafe extern "C" fn scomm_smime_generate(
         unsafe {
             write_buf(&generated.public, public_out, public_len);
             write_buf(&generated.secret, secret_out, secret_len);
-            write_buf(key_info_json(&generated.info).as_bytes(), json_out, json_len);
+            write_buf(
+                key_info_json(&generated.info).as_bytes(),
+                json_out,
+                json_len,
+            );
         }
         Ok(0)
     })
@@ -266,6 +319,9 @@ pub unsafe extern "C" fn scomm_smime_decrypt(
     } else {
         Some(String::from_utf8_lossy(read_slice(passphrase, passphrase_len)).into_owned())
     };
+    // D5: a failure leaves the caller with no buffer at all.
+    *out = ptr::null_mut();
+    *out_len = 0;
     run(|| {
         clear_error();
         let pt = engine().decrypt(&ciphertext, &private_key, pass.as_deref())?;
@@ -422,12 +478,7 @@ pub unsafe extern "C" fn scomm_smime_pop_hybrid_shared(
     };
     run(|| {
         clear_error();
-        let shared = engine().pop_hybrid_shared(
-            &private_key,
-            pass.as_deref(),
-            &kem,
-            &eph,
-        )?;
+        let shared = engine().pop_hybrid_shared(&private_key, pass.as_deref(), &kem, &eph)?;
         unsafe { write_buf(&shared, out, out_len) };
         Ok(0)
     })
@@ -485,10 +536,204 @@ pub unsafe extern "C" fn scomm_smime_pop_rsa_decrypt(
     })
 }
 
+/// Detached signature verdict as JSON. `public_key` (optional) is a bundle
+/// already held for the sender; `sender` (optional) is the From address.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_verify_detached(
+    data: *const u8,
+    data_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    public_key: *const u8,
+    public_key_len: usize,
+    sender: *const u8,
+    sender_len: usize,
+    json_out: *mut *mut u8,
+    json_len: *mut usize,
+) -> i32 {
+    let data = read_slice(data, data_len).to_vec();
+    let signature = read_slice(signature, signature_len).to_vec();
+    let public_key = (!public_key.is_null() && public_key_len > 0)
+        .then(|| read_slice(public_key, public_key_len).to_vec());
+    let sender = read_opt_str(sender, sender_len);
+    *json_out = ptr::null_mut();
+    *json_len = 0;
+    run(|| {
+        clear_error();
+        let v = engine().verify_detached(
+            &data,
+            &signature,
+            public_key.as_deref(),
+            sender.as_deref(),
+        )?;
+        unsafe { write_buf(verdict_json(&v).as_bytes(), json_out, json_len) };
+        Ok(0)
+    })
+}
+
+/// Detached signature with the named algorithm: S1 SignedData for RSA
+/// PKCS#1 v1.5 now and for every algorithm once Release 2 writers are on.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_sign_detached(
+    data: *const u8,
+    data_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    passphrase: *const u8,
+    passphrase_len: usize,
+    algorithm: *const u8,
+    algorithm_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let data = read_slice(data, data_len).to_vec();
+    let private_key = read_slice(private_key, private_key_len).to_vec();
+    let pass = read_opt_str(passphrase, passphrase_len);
+    let algorithm = read_slice(algorithm, algorithm_len).to_vec();
+    *out = ptr::null_mut();
+    *out_len = 0;
+    run(|| {
+        clear_error();
+        let options = SignOptions {
+            detached: true,
+            algorithm: sign_algorithm(&algorithm)?,
+        };
+        let sig = engine().sign(&data, &private_key, pass.as_deref(), &options)?;
+        unsafe { write_buf(&sig, out, out_len) };
+        Ok(0)
+    })
+}
+
+/// Certificate details as JSON (PEM or DER input).
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_cert_info(
+    cert: *const u8,
+    cert_len: usize,
+    json_out: *mut *mut u8,
+    json_len: *mut usize,
+) -> i32 {
+    let cert = read_slice(cert, cert_len).to_vec();
+    *json_out = ptr::null_mut();
+    *json_len = 0;
+    run(|| {
+        clear_error();
+        let info = cert_info(&cert)?;
+        let text = serde_json::to_string(&info).map_err(|e| SmimeError::Internal(e.to_string()))?;
+        unsafe { write_buf(text.as_bytes(), json_out, json_len) };
+        Ok(0)
+    })
+}
+
+/// Loads the bundled e-mail roots (PEM); writes how many were read. Empty
+/// input clears them.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_set_trust_roots(
+    pem: *const u8,
+    pem_len: usize,
+    count_out: *mut usize,
+) -> i32 {
+    let pem = read_slice(pem, pem_len).to_vec();
+    run(|| {
+        clear_error();
+        let n = set_trust_roots(&pem)?;
+        unsafe { *count_out = n };
+        Ok(0)
+    })
+}
+
+/// Path B check of a certificate (with its chain, PEM) for signing
+/// (`purpose` 0) or encryption (1); JSON `{chain, email_match}`.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_check_certificate(
+    cert_pem: *const u8,
+    cert_pem_len: usize,
+    email: *const u8,
+    email_len: usize,
+    purpose: i32,
+    json_out: *mut *mut u8,
+    json_len: *mut usize,
+) -> i32 {
+    let cert_pem = read_slice(cert_pem, cert_pem_len).to_vec();
+    let email = read_opt_str(email, email_len);
+    *json_out = ptr::null_mut();
+    *json_len = 0;
+    run(|| {
+        clear_error();
+        let purpose = match purpose {
+            0 => CertPurpose::SmimeSign,
+            1 => CertPurpose::SmimeEncrypt,
+            other => return Err(SmimeError::InvalidArgument(format!("purpose {other}"))),
+        };
+        let c = check_certificate(&cert_pem, email.as_deref(), purpose)?;
+        let text = json!({"chain": chain_name(c.chain), "email_match": c.email_match}).to_string();
+        unsafe { write_buf(text.as_bytes(), json_out, json_len) };
+        Ok(0)
+    })
+}
+
+/// ML-DSA certificate migration (Q5). Writes the updated secret bundle, or
+/// leaves `out` empty when there is nothing to do.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_add_mldsa_certificates(
+    secret: *const u8,
+    secret_len: usize,
+    email: *const u8,
+    email_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let secret = read_slice(secret, secret_len).to_vec();
+    let email = read_opt_str(email, email_len).unwrap_or_default();
+    *out = ptr::null_mut();
+    *out_len = 0;
+    run(|| {
+        clear_error();
+        if let Some(updated) = add_mldsa_certificates(&secret, &email)? {
+            unsafe { write_buf(&updated, out, out_len) };
+        }
+        Ok(0)
+    })
+}
+
+/// [scomm_smime_decrypt] plus JSON `{format, algorithm}` (D6): the app
+/// shows anything other than `f1` as not integrity protected.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_decrypt_ex(
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    passphrase: *const u8,
+    passphrase_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    json_out: *mut *mut u8,
+    json_len: *mut usize,
+) -> i32 {
+    let ciphertext = read_slice(ciphertext, ciphertext_len).to_vec();
+    let private_key = read_slice(private_key, private_key_len).to_vec();
+    let pass = read_opt_str(passphrase, passphrase_len);
+    // D5: a failure leaves the caller with no buffer at all.
+    *out = ptr::null_mut();
+    *out_len = 0;
+    *json_out = ptr::null_mut();
+    *json_len = 0;
+    run(|| {
+        clear_error();
+        let pt = engine().decrypt(&ciphertext, &private_key, pass.as_deref())?;
+        let meta = json!({"format": pt.format, "algorithm": pt.algorithm}).to_string();
+        unsafe {
+            write_buf(&pt.plaintext, out, out_len);
+            write_buf(meta.as_bytes(), json_out, json_len);
+        }
+        Ok(0)
+    })
+}
+
 /// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
 /// in the one client library.
 pub fn link_anchor() -> usize {
-    let exports: [*const (); 16] = [
+    let exports: [*const (); 23] = [
         scomm_smime_buffer_free as *const (),
         scomm_smime_last_error as *const (),
         scomm_smime_inspect as *const (),
@@ -505,6 +750,15 @@ pub fn link_anchor() -> usize {
         scomm_smime_pop_sign_classical as *const (),
         scomm_smime_pop_rsa_decrypt as *const (),
         scomm_smime_abi_version as *const (),
+        scomm_smime_verify_detached as *const (),
+        scomm_smime_sign_detached as *const (),
+        scomm_smime_cert_info as *const (),
+        scomm_smime_set_trust_roots as *const (),
+        scomm_smime_check_certificate as *const (),
+        scomm_smime_add_mldsa_certificates as *const (),
+        scomm_smime_decrypt_ex as *const (),
     ];
-    exports.iter().fold(0, |n, ptr| n.wrapping_add(*ptr as usize))
+    exports
+        .iter()
+        .fold(0, |n, ptr| n.wrapping_add(*ptr as usize))
 }

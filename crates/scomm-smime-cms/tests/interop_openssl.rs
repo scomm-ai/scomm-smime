@@ -127,13 +127,15 @@ fn engine() -> CmsSmime {
     CmsSmime::new()
 }
 
-fn scomm_decrypts(cms: &[u8], key: &[u8]) -> std::result::Result<(), String> {
+fn scomm_decrypts(cms: &[u8], key: &[u8], format: &str) -> std::result::Result<(), String> {
     let out = engine().decrypt(cms, key, None).map_err(|e| e.to_string())?;
-    if out.plaintext == MSG {
-        Ok(())
-    } else {
-        Err("wrong plaintext".into())
+    if out.plaintext != MSG {
+        return Err("wrong plaintext".into());
     }
+    if out.format != format {
+        return Err(format!("format {} instead of {format}", out.format));
+    }
+    Ok(())
 }
 
 fn scomm_verifies(sig: &[u8], key: &[u8]) -> std::result::Result<(), String> {
@@ -157,7 +159,7 @@ fn openssl_to_scomm() {
 
     // Each message is first opened by OpenSSL, so a bad recipe fails loudly here
     // instead of reading as an engine gap.
-    let mut encrypted = |name: &str, recip: &str, inkey: &str, opts: &[&str], key: &[u8], expect: common::Expect| {
+    let mut encrypted = |name: &str, recip: &str, inkey: &str, opts: &[&str], key: &[u8], format: &str, expect: common::Expect| {
         let mut args = vec!["cms", "-encrypt", "-binary", "-outform", "DER", "-in", "msg.bin", "-out", "m.cms"];
         args.extend_from_slice(opts);
         cli.run(&args);
@@ -165,7 +167,7 @@ fn openssl_to_scomm() {
             .try_run(&["cms", "-decrypt", "-binary", "-inform", "DER", "-in", "m.cms", "-recip", recip, "-inkey", inkey])
             .unwrap_or_else(|e| panic!("{name}: OpenSSL cannot read its own message: {e}"));
         assert_eq!(plain, MSG, "{name}");
-        m.case(name, expect, scomm_decrypts(&cli.read("m.cms"), key));
+        m.case(name, expect, scomm_decrypts(&cli.read("m.cms"), key, format));
     };
     let with = |cipher: &'static str, recip: &'static str, keyopts: &'static [&'static str]| -> Vec<&'static str> {
         let mut v = vec![cipher, "-recip", recip];
@@ -173,12 +175,21 @@ fn openssl_to_scomm() {
         v
     };
 
-    encrypted("RSA PKCS#1 v1.5, AES-256-CBC", "rsa.crt", "rsa.key", &with("-aes256", "rsa.crt", &[]), &rsa, Gap("H1"));
-    encrypted("RSA OAEP-SHA1, AES-256-CBC", "rsa.crt", "rsa.key", &with("-aes256", "rsa.crt", &OAEP), &rsa, Gap("H1"));
-    encrypted("RSA OAEP-SHA256, AES-256-CBC", "rsa.crt", "rsa.key", &with("-aes256", "rsa.crt", &OAEP256), &rsa, Works);
-    encrypted("RSA OAEP-SHA256, AES-128-CBC", "rsa.crt", "rsa.key", &with("-aes128", "rsa.crt", &OAEP256), &rsa, Gap("H1"));
-    encrypted("RSA, AES-256-GCM AuthEnvelopedData", "rsa.crt", "rsa.key", &with("-aes-256-gcm", "rsa.crt", &[]), &rsa, Gap("H1"));
-    encrypted("RSA OAEP-SHA256, BER indefinite length", "rsa.crt", "rsa.key", &[&["-stream"][..], &with("-aes256", "rsa.crt", &OAEP256)[..]].concat(), &rsa, Gap("H1"));
+    for (padding, keyopts) in [("PKCS#1 v1.5", &[][..]), ("OAEP-SHA1", &OAEP[..]), ("OAEP-SHA256", &OAEP256[..])] {
+        for (cipher, opt, format) in [
+            ("AES-128-CBC", "-aes128", FORMAT_F0_STD),
+            ("AES-192-CBC", "-aes192", FORMAT_F0_STD),
+            ("AES-256-CBC", "-aes256", FORMAT_F0_STD),
+            ("AES-128-GCM AuthEnvelopedData", "-aes-128-gcm", FORMAT_F1),
+            ("AES-192-GCM AuthEnvelopedData", "-aes-192-gcm", FORMAT_F1),
+            ("AES-256-GCM AuthEnvelopedData", "-aes-256-gcm", FORMAT_F1),
+        ] {
+            let name = format!("RSA {padding}, {cipher}");
+            encrypted(&name, "rsa.crt", "rsa.key", &with(opt, "rsa.crt", keyopts), &rsa, format, Works);
+        }
+    }
+    encrypted("RSA OAEP-SHA256, BER indefinite length", "rsa.crt", "rsa.key", &[&["-stream"][..], &with("-aes256", "rsa.crt", &OAEP256)[..]].concat(), &rsa, FORMAT_F0_STD, Works);
+    encrypted("RSA OAEP-SHA256, AES-256-GCM, BER indefinite length", "rsa.crt", "rsa.key", &[&["-stream"][..], &with("-aes-256-gcm", "rsa.crt", &OAEP256)[..]].concat(), &rsa, FORMAT_F1, Works);
 
     for (name, id, alg) in [
         ("ECDH P-256 KeyAgreeRecipientInfo", "p256", "smime-ecdh-p256"),
@@ -190,7 +201,7 @@ fn openssl_to_scomm() {
         let key_bundle = bundle(vec![cli.entry(alg, "encryption", &crt, Some(&p8))]);
         let opts = vec!["-aes256".to_string(), "-recip".to_string(), crt.clone()];
         let refs: Vec<&str> = opts.iter().map(String::as_str).collect();
-        encrypted(name, &crt, &key, &refs, &key_bundle, Gap("H1"));
+        encrypted(name, &crt, &key, &refs, &key_bundle, FORMAT_F0_STD, Gap("H1"));
     }
 
     // OpenSSL's CMS only does key agreement for "EC", "DH" and "DHX" keys, so it
@@ -212,11 +223,11 @@ fn openssl_to_scomm() {
         let (crt, key) = (format!("{id}.crt"), format!("{id}.key"));
         cli.run(&["cms", "-sign", "-binary", "-md", md, "-signer", &crt, "-inkey", &key, "-outform", "DER", "-in", "msg.bin", "-out", "s.p7s"]);
         let public = bundle(vec![cli.entry(alg, "signing", &crt, None)]);
-        m.case(&format!("detached {name}"), Gap("H1"), scomm_verifies(&cli.read("s.p7s"), &public));
+        m.case(&format!("detached {name}"), Works, scomm_verifies(&cli.read("s.p7s"), &public));
     }
     cli.run(&["cms", "-sign", "-binary", "-md", "sha512", "-signer", "mldsa.crt", "-inkey", "mldsa.key", "-outform", "DER", "-in", "msg.bin", "-out", "s.p7s"]);
     let mldsa = bundle(vec![cli.entry("pqc-mldsa65", "signing", "mldsa.crt", None)]);
-    m.case("detached ML-DSA-65 SHA-512 SignedData (RFC 9882)", Gap("H7"), scomm_verifies(&cli.read("s.p7s"), &mldsa));
+    m.case("detached ML-DSA-65 SHA-512 SignedData (RFC 9882)", Works, scomm_verifies(&cli.read("s.p7s"), &mldsa));
 
     m.finish("OpenSSL to Scomm");
 }

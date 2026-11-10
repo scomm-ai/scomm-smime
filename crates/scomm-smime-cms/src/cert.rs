@@ -274,6 +274,7 @@ pub fn rsa_encrypt_entry(userid: &str) -> Result<KeyEntry> {
         cert_pem: cert,
         spki_b64: String::new(),
         pkcs8_b64: Some(b64_encode(&pkcs8)),
+        legacy_key_ids: Vec::new(),
     })
 }
 
@@ -287,6 +288,7 @@ pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
         cert_pem: cert,
         spki_b64: String::new(),
         pkcs8_b64: Some(b64_encode(&pkcs8)),
+        legacy_key_ids: Vec::new(),
     })
 }
 
@@ -312,6 +314,7 @@ pub fn ed25519_sign_entry(userid: &str) -> Result<KeyEntry> {
         cert_pem: cert,
         spki_b64: b64_encode(&spki),
         pkcs8_b64: Some(b64_encode(&seed)),
+        legacy_key_ids: Vec::new(),
     })
 }
 
@@ -459,5 +462,6 @@ pub fn x25519_encrypt_entry() -> Result<KeyEntry> {
         cert_pem: String::new(),
         spki_b64: b64_encode(&spki),
         pkcs8_b64: Some(b64_encode(&secret)),
+        legacy_key_ids: Vec::new(),
     })
 }

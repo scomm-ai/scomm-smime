@@ -7,7 +7,103 @@ import 'package:scomm_openpgp/scomm_openpgp.dart';
 
 import 'types.dart';
 
+/// Lowest native ABI with the verdict, detached signing, certificate info,
+/// trust roots, ML-DSA migration and decrypt-with-format symbols.
+const int scommSmimeAbiTrust = 3;
+
 typedef _AbiVersionN = ffi.Uint32 Function();
+typedef _VerifyDetachedN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _VerifyDetachedD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _SetRootsN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _SetRootsD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _CheckCertN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Int32,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _CheckCertD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _TwoInN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _TwoInD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DecryptExN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DecryptExD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
 typedef _AbiVersionD = int Function();
 typedef _BufferFreeN = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size);
 typedef _BufferFreeD = void Function(ffi.Pointer<ffi.Uint8>, int);
@@ -273,6 +369,218 @@ class ScommSmime {
   final _SignD _popRsaDecrypt;
 
   int get abiVersion => _abiVersion();
+
+  // ABI 3 symbols are looked up on first use, so the older calls keep
+  // working against an ABI 2 library until the native rev is bumped.
+  late final _VerifyDetachedD _verifyDetached =
+      _lib.lookupFunction<_VerifyDetachedN, _VerifyDetachedD>(
+          'scomm_smime_verify_detached');
+  late final _SignAlgD _signDetached =
+      _lib.lookupFunction<_SignAlgN, _SignAlgD>('scomm_smime_sign_detached');
+  late final _InspectD _certInfo =
+      _lib.lookupFunction<_InspectN, _InspectD>('scomm_smime_cert_info');
+  late final _SetRootsD _setTrustRoots = _lib
+      .lookupFunction<_SetRootsN, _SetRootsD>('scomm_smime_set_trust_roots');
+  late final _CheckCertD _checkCertificate =
+      _lib.lookupFunction<_CheckCertN, _CheckCertD>(
+          'scomm_smime_check_certificate');
+  late final _TwoInD _addMldsaCertificates = _lib
+      .lookupFunction<_TwoInN, _TwoInD>('scomm_smime_add_mldsa_certificates');
+  late final _DecryptExD _decryptEx =
+      _lib.lookupFunction<_DecryptExN, _DecryptExD>('scomm_smime_decrypt_ex');
+
+  void _requireAbi(int version) {
+    final have = abiVersion;
+    if (have < version) {
+      throw StateError(
+        'scomm_smime native ABI $have is older than the $version this call needs',
+      );
+    }
+  }
+
+  /// Signature verdict (validity, chain, e-mail match, weak flag). Pass the
+  /// bundle already held for the sender as [publicKey] (needed for legacy
+  /// S0 signatures) and the From address as [sender].
+  SmimeSignatureVerdict verifyDetached({
+    required List<int> data,
+    required List<int> signature,
+    List<int>? publicKey,
+    String? sender,
+  }) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final d = _copy(arena, data);
+      final sig = _copy(arena, signature);
+      final pk = _copy(arena, publicKey ?? const []);
+      final from = _copy(arena, utf8.encode(sender ?? ''));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _verifyDetached(
+        d.ptr,
+        d.len,
+        sig.ptr,
+        sig.len,
+        pk.ptr,
+        pk.len,
+        from.ptr,
+        from.len,
+        outPtr,
+        outLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return SmimeSignatureVerdict.fromJson(
+        jsonDecode(utf8.decode(_take(outPtr.value, outLen.value)))
+            as Map<String, dynamic>,
+      );
+    });
+  }
+
+  /// Detached signature; [algorithm] may also be `smime-rsa-pkcs1-sha256`.
+  Uint8List signDetached({
+    required List<int> data,
+    required List<int> privateKey,
+    required String algorithm,
+    String passphrase = '',
+  }) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final d = _copy(arena, data);
+      final sk = _copy(arena, privateKey);
+      final pass = _copy(arena, utf8.encode(passphrase));
+      final alg = _copy(arena, utf8.encode(algorithm));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _signDetached(
+        d.ptr,
+        d.len,
+        sk.ptr,
+        sk.len,
+        pass.ptr,
+        pass.len,
+        alg.ptr,
+        alg.len,
+        outPtr,
+        outLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  /// Certificate details (PEM or DER).
+  SmimeCertificateInfo certInfo(List<int> certificate) {
+    _requireAbi(scommSmimeAbiTrust);
+    return SmimeCertificateInfo.fromJson(
+      jsonDecode(utf8.decode(_call1(certificate, _certInfo)))
+          as Map<String, dynamic>,
+    );
+  }
+
+  /// Loads the bundled e-mail roots (PEM) once at startup; returns how many
+  /// were read. Empty input clears them.
+  int setTrustRoots(List<int> pem) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final p = _copy(arena, pem);
+      final count = arena<ffi.Size>();
+      final code = _setTrustRoots(p.ptr, p.len, count);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return count.value;
+    });
+  }
+
+  /// Checks a certificate (with its chain, PEM) against the bundled roots.
+  SmimeCertCheck checkCertificate({
+    required List<int> certificatePem,
+    required SmimeCertPurpose purpose,
+    String? email,
+  }) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final c = _copy(arena, certificatePem);
+      final e = _copy(arena, utf8.encode(email ?? ''));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _checkCertificate(
+          c.ptr, c.len, e.ptr, e.len, purpose.wire, outPtr, outLen);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return SmimeCertCheck.fromJson(
+        jsonDecode(utf8.decode(_take(outPtr.value, outLen.value)))
+            as Map<String, dynamic>,
+      );
+    });
+  }
+
+  /// ML-DSA certificate migration: the updated secret bundle, or null when
+  /// nothing needed a certificate. Write it back only when non-null.
+  Uint8List? addMldsaCertificates({
+    required List<int> secretKey,
+    required String email,
+  }) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final sk = _copy(arena, secretKey);
+      final e = _copy(arena, utf8.encode(email));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code =
+          _addMldsaCertificates(sk.ptr, sk.len, e.ptr, e.len, outPtr, outLen);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      final out = _take(outPtr.value, outLen.value);
+      return out.isEmpty ? null : Uint8List.fromList(out);
+    });
+  }
+
+  /// Decrypts and reports the format (`f1`, `f0-std`, `f0-scomm`).
+  SmimeDecryptResult decryptWithFormat({
+    required List<int> ciphertext,
+    required List<int> privateKey,
+    String passphrase = '',
+  }) {
+    _requireAbi(scommSmimeAbiTrust);
+    return using((arena) {
+      final ct = _copy(arena, ciphertext);
+      final sk = _copy(arena, privateKey);
+      final pass = _copy(arena, utf8.encode(passphrase));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final jsonPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final jsonLen = arena<ffi.Size>();
+      final code = _decryptEx(
+        ct.ptr,
+        ct.len,
+        sk.ptr,
+        sk.len,
+        pass.ptr,
+        pass.len,
+        outPtr,
+        outLen,
+        jsonPtr,
+        jsonLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      final plaintext = Uint8List.fromList(_take(outPtr.value, outLen.value));
+      final meta = jsonDecode(utf8.decode(_take(jsonPtr.value, jsonLen.value)))
+          as Map<String, dynamic>;
+      return SmimeDecryptResult(
+        plaintext: plaintext,
+        format: meta['format'] as String? ?? '',
+        algorithm: meta['algorithm'] as String? ?? '',
+      );
+    });
+  }
 
   bool get pqcReady => _pqcReady() != 0;
 

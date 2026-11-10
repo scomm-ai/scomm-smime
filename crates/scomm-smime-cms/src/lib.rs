@@ -1,16 +1,38 @@
 mod bundle;
 mod cert;
+mod certinfo;
+mod classify;
 mod cms_envelop;
+mod kekri;
+mod legacy;
+mod legacy_writer;
 mod pqc;
+mod reader;
+mod signed;
+mod trust;
+
+pub use certinfo::{cert_info, CertInfo};
+pub use pqc::add_mldsa_certificates;
+pub use trust::{check_certificate, set_trust_roots};
 
 use scomm_smime_core::*;
 
 use bundle::KeyBundle;
 use cert::{ed25519_sign_entry, fingerprint_of, parse_email, x25519_encrypt_entry};
 use cms_envelop::{
-    decrypt_with_bundle, encrypt_to_entries, inspect_cms, maybe_pem_cms, pem_pkcs7,
-    rsa_oaep_decrypt_raw, sign_ed25519, sign_mldsa, sign_pss, sign_pss_raw, verify_signature,
+    decrypt_with_bundle, inspect_cms, pem_pkcs7, rsa_oaep_decrypt_raw, sign_pss_raw,
+    verify_detached, verify_signature,
 };
+use legacy_writer::{encrypt_to_entries, sign_ed25519, sign_mldsa, sign_pss};
+use signed::SignAlg;
+
+/// Release 2 switch (`design.md` "Compatibility and rollout"). Off: new
+/// messages stay F0-scomm and Ed25519, ML-DSA and RSA-PSS signatures stay
+/// S0, so older app versions can read them. On: F1 encryption
+/// (AuthEnvelopedData, RSA-OAEP-SHA256 KTRI and Scomm KEKRI) and S1
+/// SignedData for every algorithm. Both writers ship either way and are
+/// exercised by tests. RSA PKCS#1 v1.5 is S1 in both releases.
+pub(crate) const RELEASE_2_WRITERS: bool = false;
 
 pub struct CmsSmime;
 
@@ -60,6 +82,7 @@ fn info_from_bundle(bundle: &KeyBundle, has_secret: bool) -> SmimeKeyInfo {
                     },
                     has_secret: has_secret && e.pkcs8_b64.is_some(),
                     pqc: is_pqc_catalog(&e.alg),
+                    legacy_key_ids: e.legacy_key_ids.clone(),
                 }
             })
             .collect(),
@@ -109,21 +132,19 @@ impl SmimeProvider for CmsSmime {
         options: &SignOptions,
     ) -> Result<Vec<u8>> {
         let bundle = KeyBundle::parse(private_key)?;
-        let sign_entry: fn(&[u8], &crate::bundle::KeyEntry) -> Result<Vec<u8>> =
-            match options.algorithm {
-                ALG_ED25519 => sign_ed25519,
-                ALG_MLDSA65 => sign_mldsa,
-                ALG_RSA_PSS => sign_pss,
-                other => return Err(SmimeError::UnsupportedAlgorithm(other.to_string())),
-            };
+        let alg = SignAlg::from_name(options.algorithm)
+            .ok_or_else(|| SmimeError::UnsupportedAlgorithm(options.algorithm.to_string()))?;
         let entry = bundle
             .signing_entries()
-            .find(|e| {
-                e.alg.eq_ignore_ascii_case(options.algorithm)
-                    || (options.algorithm == ALG_RSA_PSS && e.alg.contains("rsa"))
-            })
+            .find(|e| alg.matches_entry(&e.alg))
             .ok_or(SmimeError::NoSuitableSigningKey)?;
-        sign_entry(data, entry)
+        match alg {
+            SignAlg::RsaPkcs1 => signed::sign(data, entry, alg),
+            _ if RELEASE_2_WRITERS => signed::sign(data, entry, alg),
+            SignAlg::Ed25519 => sign_ed25519(data, entry),
+            SignAlg::MlDsa65 => sign_mldsa(data, entry),
+            SignAlg::RsaPss => sign_pss(data, entry),
+        }
     }
 
     fn verify(
@@ -134,6 +155,17 @@ impl SmimeProvider for CmsSmime {
     ) -> Result<VerificationResult> {
         let bundle = KeyBundle::parse(public_key)?;
         verify_signature(data, signature, &bundle)
+    }
+
+    fn verify_detached(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        public_key: Option<&[u8]>,
+        sender: Option<&str>,
+    ) -> Result<SignatureVerdict> {
+        let bundle = public_key.map(KeyBundle::parse).transpose()?;
+        verify_detached(data, signature, bundle.as_ref(), sender)
     }
 
     fn encrypt(
@@ -171,7 +203,11 @@ impl SmimeProvider for CmsSmime {
             return Err(SmimeError::NoSuitableEncryptionKey);
         }
         let refs: Vec<&crate::bundle::KeyEntry> = chosen.iter().collect();
-        let der = encrypt_to_entries(plaintext, &refs)?;
+        let der = if RELEASE_2_WRITERS {
+            kekri::encrypt_entries(plaintext, &refs)?
+        } else {
+            encrypt_to_entries(plaintext, &refs)?
+        };
         if options.armored {
             Ok(pem_pkcs7(&der))
         } else {
@@ -190,8 +226,7 @@ impl SmimeProvider for CmsSmime {
     }
 
     fn inspect_message(&self, message: &[u8]) -> Result<MessageInfo> {
-        let der = maybe_pem_cms(message)?;
-        inspect_cms(&der)
+        inspect_cms(message)
     }
 
     fn test_passphrase(&self, private_key: &[u8], _passphrase: Option<&str>) -> Result<()> {

@@ -33,6 +33,7 @@ fn opens(message: &str, key: &str) {
         .decrypt(&file(message), &file(&format!("{key}.sec.json")), None)
         .unwrap_or_else(|e| panic!("{message} with {key}: {e}"));
     assert_eq!(out.plaintext, PLAINTEXT, "{message} with {key}");
+    assert_eq!(out.format, FORMAT_F0_SCOMM, "{message} with {key}");
 }
 
 fn verifies(signature: &str, key: &str) {
