@@ -416,3 +416,28 @@ fn s0_and_s1_report_the_same_fingerprint_for_one_key() {
         );
     }
 }
+
+/// The boolean API answers "was this signed by one of these keys?": a
+/// standard signature verifies against its own certificate, so a key the
+/// caller supplied that did not sign it must not report valid.
+#[test]
+fn boolean_verify_requires_the_supplied_key_to_be_the_signer() {
+    use crate::cms_envelop::verify_signature;
+    let entries = all();
+    for (i, (alg, entry)) in entries.iter().enumerate() {
+        let sig = sign(DATA, entry, *alg).unwrap();
+        let own = verify_signature(DATA, &sig, &public_bundle(entry)).unwrap();
+        assert_eq!(
+            own.validity,
+            SignatureValidity::CryptographicallyValid,
+            "{alg:?}"
+        );
+        let (_, other) = &entries[(i + 2) % entries.len()];
+        let stranger = verify_signature(DATA, &sig, &public_bundle(other)).unwrap();
+        assert_eq!(
+            stranger.validity,
+            SignatureValidity::CryptographicallyInvalid,
+            "{alg:?} verified with another signer's key"
+        );
+    }
+}

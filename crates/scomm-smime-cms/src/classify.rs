@@ -13,8 +13,24 @@ use scomm_smime_core::*;
 use crate::kekri::{kek_scheme, Scheme};
 use crate::legacy;
 
-/// Larger input is refused before any parsing.
-pub(crate) const MAX_MESSAGE_LEN: usize = 64 << 20;
+/// Largest CMS message (DER) the engine reads or writes: 128 MiB. Above
+/// every provider's message cap once MIME and transfer encoding are counted
+/// (Graph's 150 MB on the wire is about 105 MiB of DER), so any message a
+/// supported mailbox delivers can be opened. The writers refuse to produce
+/// more ([MAX_PLAINTEXT_LEN]), so nothing the app sends is unreadable.
+pub const MAX_MESSAGE_LEN: usize = 128 << 20;
+
+/// Largest plaintext the writers accept: [MAX_MESSAGE_LEN] less 1 MiB for
+/// recipient infos and padding. The app checks this before it sends.
+pub const MAX_PLAINTEXT_LEN: usize = MAX_MESSAGE_LEN - (1 << 20);
+
+/// Armored (PEM) input is base64, about 4/3 of the DER; bound it before
+/// decoding, then check the DER itself.
+const MAX_ARMORED_LEN: usize = MAX_MESSAGE_LEN / 3 * 4 + (1 << 20);
+
+pub(crate) fn too_large() -> SmimeError {
+    SmimeError::InvalidArgument(format!("message larger than {} MiB", MAX_MESSAGE_LEN >> 20))
+}
 
 const OID_ENVELOPED: &str = "1.2.840.113549.1.7.3";
 const OID_AUTH_ENVELOPED: &str = "1.2.840.113549.1.9.16.1.23";
@@ -81,12 +97,13 @@ pub(crate) struct Parsed {
 }
 
 pub(crate) fn classify(input: &[u8]) -> Result<Parsed> {
-    if input.len() > MAX_MESSAGE_LEN {
-        return Err(SmimeError::InvalidArgument(
-            "message larger than 64 MiB".into(),
-        ));
+    if input.len() > MAX_ARMORED_LEN {
+        return Err(too_large());
     }
     let der = unarmor(input)?;
+    if der.len() > MAX_MESSAGE_LEN {
+        return Err(too_large());
+    }
     let kind = match CmsContentInfo::from_der(&der) {
         Ok(cms) => standard_kind(&cms),
         Err(_) => legacy::classify(&der)?,

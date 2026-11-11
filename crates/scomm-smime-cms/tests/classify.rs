@@ -77,7 +77,7 @@ fn oid_bytes_inside_ciphertext_do_not_change_routing() {
 
 #[test]
 fn oversize_input_is_refused_before_parsing() {
-    let big = vec![0x30u8; 64 * 1024 * 1024 + 1];
+    let big = vec![0x30u8; scomm_smime_cms::MAX_MESSAGE_LEN + 1];
     assert!(matches!(
         CmsSmime::new().inspect_message(&big),
         Err(SmimeError::InvalidArgument(_))

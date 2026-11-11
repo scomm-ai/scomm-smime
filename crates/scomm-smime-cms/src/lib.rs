@@ -12,6 +12,7 @@ mod signed;
 mod trust;
 
 pub use certinfo::{cert_info, CertInfo};
+pub use classify::{MAX_MESSAGE_LEN, MAX_PLAINTEXT_LEN};
 pub use pqc::add_mldsa_certificates;
 pub use trust::{check_certificate, set_trust_roots};
 
@@ -202,12 +203,23 @@ impl SmimeProvider for CmsSmime {
         if chosen.is_empty() {
             return Err(SmimeError::NoSuitableEncryptionKey);
         }
+        if plaintext.len() > MAX_PLAINTEXT_LEN {
+            return Err(SmimeError::InvalidArgument(format!(
+                "message larger than {} MiB",
+                MAX_PLAINTEXT_LEN >> 20
+            )));
+        }
         let refs: Vec<&crate::bundle::KeyEntry> = chosen.iter().collect();
         let der = if RELEASE_2_WRITERS {
             kekri::encrypt_entries(plaintext, &refs)?
         } else {
             encrypt_to_entries(plaintext, &refs)?
         };
+        // Many recipients could still push the envelope past what the
+        // reader accepts; never hand out a message nobody can open.
+        if der.len() > MAX_MESSAGE_LEN {
+            return Err(classify::too_large());
+        }
         if options.armored {
             Ok(pem_pkcs7(&der))
         } else {

@@ -386,6 +386,18 @@ class ScommSmime {
           'scomm_smime_check_certificate');
   late final _TwoInD _addMldsaCertificates = _lib
       .lookupFunction<_TwoInN, _TwoInD>('scomm_smime_add_mldsa_certificates');
+  late final int Function() _maxPlaintextLen =
+      _lib.lookupFunction<ffi.Size Function(), int Function()>(
+    'scomm_smime_max_plaintext_len',
+  );
+
+  /// Largest plaintext [encrypt] accepts. Check it before sending: anything
+  /// larger is refused, and anything within it can be read back.
+  int get maxPlaintextBytes {
+    _requireAbi(scommSmimeAbiTrust);
+    return _maxPlaintextLen();
+  }
+
   late final _DecryptExD _decryptEx =
       _lib.lookupFunction<_DecryptExN, _DecryptExD>('scomm_smime_decrypt_ex');
 

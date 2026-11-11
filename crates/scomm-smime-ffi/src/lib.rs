@@ -7,6 +7,7 @@ use std::slice;
 
 use scomm_smime_cms::{
     add_mldsa_certificates, cert_info, check_certificate, set_trust_roots, CmsSmime,
+    MAX_PLAINTEXT_LEN,
 };
 use scomm_smime_core::*;
 use serde_json::json;
@@ -730,10 +731,17 @@ pub unsafe extern "C" fn scomm_smime_decrypt_ex(
     })
 }
 
+/// Largest plaintext `scomm_smime_encrypt` accepts (ABI 3). Anything the
+/// engine writes within it can be read back.
+#[no_mangle]
+pub extern "C" fn scomm_smime_max_plaintext_len() -> usize {
+    MAX_PLAINTEXT_LEN
+}
+
 /// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
 /// in the one client library.
 pub fn link_anchor() -> usize {
-    let exports: [*const (); 23] = [
+    let exports: [*const (); 24] = [
         scomm_smime_buffer_free as *const (),
         scomm_smime_last_error as *const (),
         scomm_smime_inspect as *const (),
@@ -757,6 +765,7 @@ pub fn link_anchor() -> usize {
         scomm_smime_check_certificate as *const (),
         scomm_smime_add_mldsa_certificates as *const (),
         scomm_smime_decrypt_ex as *const (),
+        scomm_smime_max_plaintext_len as *const (),
     ];
     exports
         .iter()

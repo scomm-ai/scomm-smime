@@ -99,6 +99,10 @@ int32_t scomm_smime_add_mldsa_certificates(
     const uint8_t *email, size_t email_len,
     uint8_t **out, size_t *out_len);
 
+/* ABI 3. Largest plaintext scomm_smime_encrypt accepts; anything written
+ * within it can be read back. */
+size_t scomm_smime_max_plaintext_len(void);
+
 /* ABI 3. As scomm_smime_decrypt, plus JSON {format, algorithm}. */
 int32_t scomm_smime_decrypt_ex(
     const uint8_t *ciphertext, size_t ciphertext_len,

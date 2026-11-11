@@ -383,7 +383,7 @@ fn verdict(signer: Option<String>) -> SignatureVerdict {
 }
 
 /// Ed25519 entries store an SPKI (or, in old bundles, the raw 32 bytes).
-fn ed25519_key(stored: &[u8]) -> Option<PKey<openssl::pkey::Public>> {
+pub(crate) fn ed25519_key(stored: &[u8]) -> Option<PKey<openssl::pkey::Public>> {
     if stored.len() == 32 {
         PKey::public_key_from_raw_bytes(stored, openssl::pkey::Id::ED25519).ok()
     } else {

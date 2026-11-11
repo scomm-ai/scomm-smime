@@ -287,3 +287,11 @@ fn decrypt_ex_reports_the_format() {
     assert!(plaintext.is_empty());
     assert!(meta.0.is_null() && meta.1 == 0);
 }
+
+#[test]
+fn the_plaintext_limit_is_the_engine_limit() {
+    assert_eq!(
+        scomm_smime_max_plaintext_len(),
+        scomm_smime_cms::MAX_PLAINTEXT_LEN
+    );
+}

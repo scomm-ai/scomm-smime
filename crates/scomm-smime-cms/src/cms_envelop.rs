@@ -164,15 +164,53 @@ pub fn verify_detached(
     }
 }
 
-/// Validity only, for callers that predate the verdict.
+/// SPKI fingerprints of the bundle's signing keys, the value verdicts report.
+fn signing_key_fingerprints(public: &KeyBundle) -> Vec<String> {
+    let fingerprint = |k: Option<PKey<openssl::pkey::Public>>| {
+        k.and_then(|k| crate::trust::spki_fingerprint(&k).ok())
+    };
+    let out = public
+        .signing_entries()
+        .filter_map(|e| {
+            if !e.cert_pem.is_empty() {
+                return fingerprint(
+                    X509::from_pem(e.cert_pem.as_bytes())
+                        .and_then(|c| c.public_key())
+                        .ok(),
+                );
+            }
+            let raw = b64_decode(&e.spki_b64).ok()?;
+            if is_pqc_catalog(&e.alg) {
+                fingerprint(crate::pqc::mldsa_public_pkey(&raw).ok())
+            } else {
+                fingerprint(legacy::ed25519_key(&raw))
+                    .or_else(|| fingerprint(PKey::public_key_from_der(&raw).ok()))
+            }
+        })
+        .collect();
+    let _ = openssl::error::ErrorStack::get();
+    out
+}
+
+/// Validity of [signature] as made by one of [public]'s signing keys. A
+/// standard signature carries its own certificate, which verifies it; it
+/// counts here only when that certificate's key is one of [public]'s.
+/// Callers that want the signer whatever it is use [verify_detached].
 pub fn verify_signature(
     data: &[u8],
     signature: &[u8],
     public: &KeyBundle,
 ) -> Result<VerificationResult> {
-    Ok(VerificationResult {
-        validity: verify_detached(data, signature, Some(public), None)?.validity,
-    })
+    let v = verify_detached(data, signature, Some(public), None)?;
+    let validity = match (v.format, v.validity, &v.signer_fingerprint) {
+        (Some(SignatureFormat::S1), SignatureValidity::CryptographicallyValid, Some(signer))
+            if !signing_key_fingerprints(public).contains(signer) =>
+        {
+            SignatureValidity::CryptographicallyInvalid
+        }
+        _ => v.validity,
+    };
+    Ok(VerificationResult { validity })
 }
 
 pub(crate) fn oaep_decrypt(sk: &PKey<Private>, ciphertext: &[u8]) -> Result<Vec<u8>> {
