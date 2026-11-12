@@ -110,10 +110,11 @@ fn a_matching_certificate_with_the_wrong_key_releases_nothing() {
     assert!(matches!(err, SmimeError::DecryptionFailed), "{err:?}");
 }
 
-/// The engine's own RSA output until Release 2 (OAEP-SHA256 under absent
-/// parameters) still opens through the legacy reader and says so.
+/// The engine's own RSA output: F1 (standard KTRI) once the Release 2 switch
+/// is on; before, OAEP-SHA256 under absent parameters, read by the legacy
+/// reader. Frozen legacy RSA mail is covered by `frozen_corpus.rs`.
 #[test]
-fn legacy_rsa_output_still_reads_as_f0_scomm() {
+fn engine_rsa_output_reads_with_its_format() {
     let a = identity("a", 1);
     let public = serde_json::to_vec(&json!({"v": 1, "entries": [{
         "alg": ALG_RSA_OAEP,
@@ -128,5 +129,10 @@ fn legacy_rsa_output_still_reads_as_f0_scomm() {
         .unwrap();
     let out = decrypt(&cms, &bundle(&a.cert, &a.key)).unwrap();
     assert_eq!(out.plaintext, MSG);
-    assert_eq!(out.format, FORMAT_F0_SCOMM);
+    let want = if scomm_smime_cms::RELEASE_2_WRITERS {
+        FORMAT_F1
+    } else {
+        FORMAT_F0_SCOMM
+    };
+    assert_eq!(out.format, want);
 }

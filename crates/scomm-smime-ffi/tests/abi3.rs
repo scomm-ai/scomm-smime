@@ -28,7 +28,12 @@ fn json(bytes: &[u8]) -> Value {
 
 /// A generated post-quantum key: Ed25519 and ML-DSA signing entries.
 fn pqc_key() -> (Vec<u8>, Vec<u8>) {
-    let userid = b"Dana <dana@example.com>";
+    pqc_key_for(b"Dana <dana@example.com>")
+}
+
+/// [pqc_key] for [userid]; without an address the ML-DSA entry is made
+/// bare, as keys from older builds are, so the migration has work to do.
+fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let (mut p, mut pl, mut s, mut sl, mut j, mut jl) =
         (ptr::null_mut(), 0, ptr::null_mut(), 0, ptr::null_mut(), 0);
     let code = unsafe {
@@ -102,13 +107,16 @@ fn sign_detached_then_verify_detached() {
     assert_eq!(code, 0);
     let v = json(&verdict);
     assert_eq!(v["validity"], "valid");
-    // Release 1 writes Ed25519 as S0.
-    assert_eq!(v["format"], "s0");
-    assert_eq!(v["chain"], "no-chain");
+    // Ed25519 is S1 once the Release 2 switch is on, S0 before.
+    let s1 = scomm_smime_cms::RELEASE_2_WRITERS;
+    assert_eq!(v["format"], if s1 { "s1" } else { "s0" });
+    // S1 carries its self-signed certificate; S0 carries none.
+    assert_eq!(v["chain"], if s1 { "untrusted-root" } else { "no-chain" });
     assert_eq!(v["revocation"], "not-checked");
     assert_eq!(v["signer_fingerprint"].as_str().unwrap().len(), 64);
 
-    // Without a key and sender: S0 cannot be checked, and nothing fails.
+    // Without a key and sender: S1 is checked against the certificate it
+    // carries; S0 cannot be checked, and nothing fails.
     let (code, verdict) = take(|o, l| unsafe {
         scomm_smime_verify_detached(
             DATA.as_ptr(),
@@ -124,7 +132,8 @@ fn sign_detached_then_verify_detached() {
         )
     });
     assert_eq!(code, 0);
-    assert_eq!(json(&verdict)["validity"], "unknown-signer");
+    let want = if s1 { "valid" } else { "unknown-signer" };
+    assert_eq!(json(&verdict)["validity"], want);
 
     let bad = b"nonsense";
     let (code, verdict) = take(|o, l| unsafe {
@@ -199,10 +208,23 @@ fn cert_info_roots_check_and_migration() {
     );
     assert_eq!(count, 0);
 
-    let (code, updated) = take(|o, l| unsafe {
+    // A new key is born with its ML-DSA certificate (task 5.9).
+    let (code, none) = take(|o, l| unsafe {
         scomm_smime_add_mldsa_certificates(
             secret.as_ptr(),
             secret.len(),
+            email.as_ptr(),
+            email.len(),
+            o,
+            l,
+        )
+    });
+    assert_eq!((code, none.len()), (0, 0), "new key: nothing to do");
+    let (_, bare) = pqc_key_for(b"Dana");
+    let (code, updated) = take(|o, l| unsafe {
+        scomm_smime_add_mldsa_certificates(
+            bare.as_ptr(),
+            bare.len(),
             email.as_ptr(),
             email.len(),
             o,
@@ -261,8 +283,8 @@ fn decrypt_ex_reports_the_format() {
     assert_eq!(plaintext, DATA);
     let m = unsafe { std::slice::from_raw_parts(meta.0, meta.1) }.to_vec();
     unsafe { scomm_smime_buffer_free(meta.0, meta.1) };
-    // Release 1 still writes F0-scomm.
-    assert_eq!(json(&m)["format"], "f0-scomm");
+    let f1 = scomm_smime_cms::RELEASE_2_WRITERS;
+    assert_eq!(json(&m)["format"], if f1 { "f1" } else { "f0-scomm" });
 
     // A failure leaves both buffers empty.
     let mut broken = cms.clone();

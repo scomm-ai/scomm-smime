@@ -18,7 +18,7 @@ const DATA: &[u8] = b"Content-Type: text/plain\r\n\r\nsigned body\r\n";
 /// Self-signed certificate for a test ML-DSA entry (task 3.4 makes the real
 /// ones); X509_sign takes no digest for ML-DSA.
 fn mldsa_entry() -> KeyEntry {
-    let mut e = pqc::mldsa_sign_entry().unwrap();
+    let mut e = pqc::mldsa_sign_entry(None).unwrap();
     let key = pqc::mldsa_pkey(&b64_decode(e.pkcs8_b64.as_ref().unwrap()).unwrap()).unwrap();
     let mut name = X509Name::builder().unwrap();
     name.append_entry_by_text("CN", "mldsa@example.com")
@@ -101,14 +101,12 @@ fn a_key_that_does_not_match_the_certificate_is_refused() {
     );
 }
 
-/// RSA PKCS#1 v1.5 is S1 from Release 1; the others stay S0 until the
-/// Release 2 constant flips.
+/// RSA PKCS#1 v1.5 is always S1; the others are S1 once the Release 2
+/// switch is on and S0 before.
 #[test]
-#[allow(clippy::assertions_on_constants)] // fails on purpose when Release 2 flips it
-fn release_1_routes_only_rsa_pkcs1_to_s1() {
+fn signing_follows_the_release_switch() {
     use crate::bundle::KeyBundle;
     use crate::CmsSmime;
-    assert!(!crate::RELEASE_2_WRITERS);
     for (alg, entry) in all() {
         let name = match alg {
             SignAlg::RsaPkcs1 => ALG_RSA_PKCS1,
@@ -128,7 +126,7 @@ fn release_1_routes_only_rsa_pkcs1_to_s1() {
         };
         let sig = CmsSmime::new().sign(DATA, &bundle, None, &options).unwrap();
         let s1 = matches!(classify(&sig).unwrap().kind, Kind::Signed);
-        assert_eq!(s1, alg == SignAlg::RsaPkcs1, "{name}");
+        assert_eq!(s1, alg == SignAlg::RsaPkcs1 || crate::RELEASE_2_WRITERS, "{name}");
     }
 }
 

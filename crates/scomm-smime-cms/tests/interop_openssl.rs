@@ -246,6 +246,8 @@ fn scomm_to_openssl() {
             })
             .expect("generate")
     };
+    // Gaps the Release 2 writers close: open while the switch is off.
+    let release_2 = |id| if scomm_smime_cms::RELEASE_2_WRITERS { Works } else { Gap(id) };
     let classical = generate(KeyProfile::Classical, "classical");
     let other = generate(KeyProfile::Classical, "other");
     let pqc = generate(KeyProfile::PqcCms, "pqc");
@@ -259,15 +261,15 @@ fn scomm_to_openssl() {
             .encrypt(MSG, keys, &EncryptOptions { armored: false })
             .expect("encrypt")
     };
-    m.case("X25519 message parses as CMS", Gap("C1"), parses("x.cms", &encrypt(&[&classical.public])));
-    m.case("two X25519 recipients parse as CMS", Gap("C1"), parses("xx.cms", &encrypt(&[&classical.public, &other.public])));
-    m.case("hybrid message parses as CMS", Gap("C1"), parses("h.cms", &encrypt(&[&pqc.public])));
+    m.case("X25519 message parses as CMS", release_2("C1"), parses("x.cms", &encrypt(&[&classical.public])));
+    m.case("two X25519 recipients parse as CMS", release_2("C1"), parses("xx.cms", &encrypt(&[&classical.public, &other.public])));
+    m.case("hybrid message parses as CMS", release_2("C1"), parses("h.cms", &encrypt(&[&pqc.public])));
 
     let rsa_public = bundle(vec![cli.entry("smime-rsa-oaep-sha256", "encryption", "rsa.crt", None)]);
     cli.write("r.cms", &encrypt(&[&rsa_public]));
     m.case(
         "RSA envelope opens in OpenSSL",
-        Gap("H1"),
+        release_2("H1"),
         cli.try_run(&["cms", "-decrypt", "-binary", "-inform", "DER", "-in", "r.cms", "-recip", "rsa.crt", "-inkey", "rsa.key"])
             .map(|_| ()),
     );
@@ -292,11 +294,11 @@ fn scomm_to_openssl() {
     cli.write("e.p7s", &sign(&classical.secret, ALG_ED25519));
     m.case(
         "Ed25519 signature verifies in OpenSSL",
-        Gap("C1"),
+        release_2("C1"),
         cli.try_run(&["cms", "-verify", "-binary", "-inform", "DER", "-in", "e.p7s", "-content", "msg.bin", "-noverify", "-certfile", "alice.crt"])
             .map(|_| ()),
     );
-    m.case("ML-DSA-65 signature parses as CMS", Gap("H7"), parses("m.p7s", &sign(&pqc.secret, ALG_MLDSA65)));
+    m.case("ML-DSA-65 signature parses as CMS", release_2("H7"), parses("m.p7s", &sign(&pqc.secret, ALG_MLDSA65)));
 
     m.case(
         "self-issued Ed25519 certificate parses",

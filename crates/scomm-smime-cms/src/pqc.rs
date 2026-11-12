@@ -267,6 +267,14 @@ fn certificate_is_sound(entry: &KeyEntry, email: &str) -> Result<()> {
     Ok(())
 }
 
+/// [entry] with a new certificate that passed [certificate_is_sound].
+fn certified(entry: &KeyEntry, email: &str) -> Result<KeyEntry> {
+    let mut updated = entry.clone();
+    updated.cert_pem = mldsa_certificate(entry, email)?;
+    certificate_is_sound(&updated, email)?;
+    Ok(updated)
+}
+
 /// Q5 migration, run on unlock: every ML-DSA signing entry with a seed and
 /// no certificate gets one; its previous key ID goes into `legacy_key_ids`.
 /// Returns the updated secret bundle, or `None` when nothing changed, so a
@@ -287,9 +295,7 @@ pub fn add_mldsa_certificates(secret_bundle: &[u8], email: &str) -> Result<Optio
         if !wants_cert {
             continue;
         }
-        let mut updated = e.clone();
-        updated.cert_pem = mldsa_certificate(e, &email)?;
-        certificate_is_sound(&updated, &email)?;
+        let mut updated = certified(e, &email)?;
         let old_id = crate::cert::fingerprint_of(e.spki_b64.as_bytes());
         if !updated.legacy_key_ids.contains(&old_id) {
             updated.legacy_key_ids.push(old_id);
@@ -303,7 +309,18 @@ pub fn add_mldsa_certificates(secret_bundle: &[u8], email: &str) -> Result<Optio
     bundle.to_secret_json().map(Some)
 }
 
-pub fn mldsa_sign_entry() -> Result<KeyEntry> {
+/// A new ML-DSA-65 signing entry. With a mailbox address it carries its
+/// certificate from the start (task 5.9), so it has no legacy key ID;
+/// without one the unlock migration adds the certificate later.
+pub fn mldsa_sign_entry(email: Option<&str>) -> Result<KeyEntry> {
+    let entry = bare_mldsa_sign_entry()?;
+    match email {
+        Some(email) => certified(&entry, email),
+        None => Ok(entry),
+    }
+}
+
+fn bare_mldsa_sign_entry() -> Result<KeyEntry> {
     let seed = random(32)?;
     let public = mldsa_public(&seed)?;
     Ok(KeyEntry {

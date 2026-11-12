@@ -208,6 +208,42 @@ fn sign_with_digest(
     }
 }
 
+/// Catalog name of the single signer's signature algorithm, for
+/// `inspect_message`: ML-DSA-65 and Ed25519 by OID, anything else RSA.
+/// `None` when the SignedData does not parse or has no single signer.
+pub(crate) fn signer_algorithm(der: &[u8]) -> Option<&'static str> {
+    let cms = CmsContentInfo::from_der(der).ok();
+    let _ = openssl::error::ErrorStack::get();
+    let cms = cms?;
+    unsafe {
+        let infos = CMS_get0_SignerInfos(cms.as_ptr());
+        if infos.is_null() || ffi::OPENSSL_sk_num(infos) != 1 {
+            return None;
+        }
+        let si = ffi::OPENSSL_sk_value(infos, 0);
+        let (mut pk, mut signer, mut dig, mut sig) = (
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        );
+        CMS_SignerInfo_get0_algs(si, &mut pk, &mut signer, &mut dig, &mut sig);
+        if sig.is_null() {
+            return None;
+        }
+        let mut obj: *const ffi::ASN1_OBJECT = ptr::null();
+        ffi::X509_ALGOR_get0(&mut obj, ptr::null_mut(), ptr::null_mut(), sig);
+        let mut buf = [0u8; 64];
+        let n = ffi::OBJ_obj2txt(buf.as_mut_ptr().cast(), buf.len() as c_int, obj, 1);
+        let oid = std::str::from_utf8(&buf[..n.max(0) as usize]).ok()?;
+        Some(match oid {
+            "2.16.840.1.101.3.4.3.18" => scomm_smime_core::ALG_MLDSA65,
+            "1.3.101.112" => scomm_smime_core::ALG_ED25519,
+            _ => scomm_smime_core::ALG_RSA_PKCS1,
+        })
+    }
+}
+
 /// SHA-1 and MD5 message digests are weak (N1 for S/MIME).
 unsafe fn digest_is_weak(alg: *mut ffi::X509_ALGOR) -> bool {
     if alg.is_null() {

@@ -113,16 +113,37 @@ fn migrate_and_check(secret: &[u8]) -> Vec<u8> {
     updated
 }
 
-#[test]
-fn a_new_pqc_key_gains_a_certificate_once() {
-    let key = CmsSmime::new()
+fn new_pqc_key(userid: &str) -> Vec<u8> {
+    CmsSmime::new()
         .generate_key(&GenerateKeyOptions {
-            userid: format!("Alice <{MAILBOX}>"),
+            userid: userid.to_string(),
             profile: KeyProfile::PqcCms,
             ..Default::default()
         })
-        .unwrap();
-    migrate_and_check(&key.secret);
+        .unwrap()
+        .secret
+}
+
+/// Task 5.9: a new key carries its certificate from the start, so it has
+/// no old key ID and the migration has nothing to do.
+#[test]
+fn a_new_pqc_key_is_born_with_a_certificate() {
+    let secret = new_pqc_key(&format!("Alice <{MAILBOX}>"));
+    let entry = mldsa(&entries(&secret));
+    check_profile(entry["cert_pem"].as_str().unwrap());
+    assert!(entry.get("legacy_key_ids").map_or(true, |v| v == &serde_json::json!([])));
+    assert!(add_mldsa_certificates(&secret, MAILBOX).unwrap().is_none());
+    let public = mldsa(&entries(&public_of(&secret)));
+    assert_eq!(public["cert_pem"], entry["cert_pem"]);
+}
+
+/// Without an address the key is made bare, and the unlock migration
+/// certifies it once the mailbox is known.
+#[test]
+fn a_new_pqc_key_without_an_address_gains_a_certificate_once() {
+    let secret = new_pqc_key("Alice");
+    assert_eq!(mldsa(&entries(&secret))["cert_pem"], "");
+    migrate_and_check(&secret);
 }
 
 /// The frozen key from an older build: its old S0 signature still verifies

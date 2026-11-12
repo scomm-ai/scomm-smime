@@ -59,10 +59,15 @@ pub fn inspect_cms(cms: &[u8]) -> Result<MessageInfo> {
             algorithm: algorithm.to_string(),
             ..Default::default()
         },
-        Kind::Signed => MessageInfo {
-            signed: true,
-            ..Default::default()
-        },
+        Kind::Signed => {
+            let algorithm = crate::signed::signer_algorithm(cms).unwrap_or_default();
+            MessageInfo {
+                signed: true,
+                pqc: algorithm == ALG_MLDSA65,
+                algorithm: algorithm.to_string(),
+                ..Default::default()
+            }
+        }
         Kind::Other => MessageInfo::default(),
     })
 }

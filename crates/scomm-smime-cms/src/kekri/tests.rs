@@ -641,29 +641,27 @@ fn engine_decrypt(der: &[u8], secret: &[&KeyEntry]) -> Result<DecryptResult> {
     CmsSmime::new().decrypt(der, &bundle_json(secret, true), None)
 }
 
+/// The engine writes F1 once the Release 2 switch is on, F0-scomm before.
 #[test]
-#[allow(clippy::assertions_on_constants)] // fails on purpose when Release 2 flips it
-fn release_1_still_writes_f0_scomm() {
-    assert!(
-        !crate::RELEASE_2_WRITERS,
-        "the F1 writer is switched on only in Release 2"
-    );
+fn the_writer_follows_the_release_switch() {
     let x = x25519_encrypt_entry().unwrap();
     let der = CmsSmime::new()
         .encrypt(
-            b"release 1",
+            b"release switch",
             &[&bundle_json(&[&x], false)],
             &EncryptOptions { armored: false },
         )
         .unwrap();
     assert!(matches!(
         classify(&der).unwrap().kind,
-        Kind::Enveloped {
-            authenticated: false,
-            ..
-        }
+        Kind::Enveloped { authenticated, .. } if authenticated == crate::RELEASE_2_WRITERS
     ));
-    assert_eq!(engine_decrypt(&der, &[&x]).unwrap().format, FORMAT_F0_SCOMM);
+    let want = if crate::RELEASE_2_WRITERS {
+        FORMAT_F1
+    } else {
+        FORMAT_F0_SCOMM
+    };
+    assert_eq!(engine_decrypt(&der, &[&x]).unwrap().format, want);
 }
 
 #[test]

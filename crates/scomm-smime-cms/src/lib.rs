@@ -33,7 +33,7 @@ use signed::SignAlg;
 /// (AuthEnvelopedData, RSA-OAEP-SHA256 KTRI and Scomm KEKRI) and S1
 /// SignedData for every algorithm. Both writers ship either way and are
 /// exercised by tests. RSA PKCS#1 v1.5 is S1 in both releases.
-pub(crate) const RELEASE_2_WRITERS: bool = false;
+pub const RELEASE_2_WRITERS: bool = true;
 
 pub struct CmsSmime;
 
@@ -109,7 +109,10 @@ impl SmimeProvider for CmsSmime {
         ];
         if options.profile == KeyProfile::PqcCms {
             entries.push(pqc::hybrid_encrypt_entry()?);
-            entries.push(pqc::mldsa_sign_entry()?);
+            let email = parse_email(userid);
+            entries.push(pqc::mldsa_sign_entry(
+                Some(email.as_str()).filter(|e| e.contains('@')),
+            )?);
         }
         let bundle = KeyBundle { v: 1, entries };
         let public = bundle.to_public_json()?;
