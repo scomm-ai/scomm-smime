@@ -56,6 +56,61 @@ int32_t scomm_smime_verify(
     const uint8_t *public_key, size_t public_key_len,
     int32_t *valid_out);
 
+/* ABI 3. Verdict JSON: validity, format (s1/s0), signer_fingerprint (SPKI
+ * SHA-256), signer_cert_pem, chain, email_match, weak_algorithm,
+ * revocation ("not-checked"). public_key and sender may be NULL. */
+int32_t scomm_smime_verify_detached(
+    const uint8_t *data, size_t data_len,
+    const uint8_t *signature, size_t signature_len,
+    const uint8_t *public_key, size_t public_key_len,
+    const uint8_t *sender, size_t sender_len,
+    uint8_t **json_out, size_t *json_len);
+
+/* ABI 3. Detached signature; also accepts "smime-rsa-pkcs1-sha256". */
+int32_t scomm_smime_sign_detached(
+    const uint8_t *data, size_t data_len,
+    const uint8_t *private_key, size_t private_key_len,
+    const uint8_t *passphrase, size_t passphrase_len,
+    const uint8_t *algorithm, size_t algorithm_len,
+    uint8_t **out, size_t *out_len);
+
+/* ABI 3. Certificate details JSON; PEM or DER input. */
+int32_t scomm_smime_cert_info(
+    const uint8_t *cert, size_t cert_len,
+    uint8_t **json_out, size_t *json_len);
+
+/* ABI 3. Bundled e-mail roots (PEM); empty input clears them. */
+int32_t scomm_smime_set_trust_roots(
+    const uint8_t *pem, size_t pem_len,
+    size_t *count_out);
+
+/* ABI 3. purpose: 0 = S/MIME signing, 1 = S/MIME encryption. JSON
+ * {chain, email_match}. email may be NULL. */
+int32_t scomm_smime_check_certificate(
+    const uint8_t *cert_pem, size_t cert_pem_len,
+    const uint8_t *email, size_t email_len,
+    int32_t purpose,
+    uint8_t **json_out, size_t *json_len);
+
+/* ABI 3. Writes the updated secret bundle, or nothing (out_len 0) when no
+ * ML-DSA entry needs a certificate. */
+int32_t scomm_smime_add_mldsa_certificates(
+    const uint8_t *secret, size_t secret_len,
+    const uint8_t *email, size_t email_len,
+    uint8_t **out, size_t *out_len);
+
+/* ABI 3. Largest plaintext scomm_smime_encrypt accepts; anything written
+ * within it can be read back. */
+size_t scomm_smime_max_plaintext_len(void);
+
+/* ABI 3. As scomm_smime_decrypt, plus JSON {format, algorithm}. */
+int32_t scomm_smime_decrypt_ex(
+    const uint8_t *ciphertext, size_t ciphertext_len,
+    const uint8_t *private_key, size_t private_key_len,
+    const uint8_t *passphrase, size_t passphrase_len,
+    uint8_t **out, size_t *out_len,
+    uint8_t **json_out, size_t *json_len);
+
 int32_t scomm_smime_inspect_message(
     const uint8_t *message, size_t message_len,
     uint8_t **json_out, size_t *json_len);
