@@ -248,16 +248,16 @@ fn kek_derivation_matches_independent_vectors() {
         (
             Scheme::X25519,
             "3073300b060960864801650304012d020120a061045f305d0c0f53636f6d6d2d434d532d4b454b5249\
-             061369f98dc2eed1e1a2afafa4d2a1ba84a0fe9f7a0201010410a0a1a2a3a4a5a6a7a8a9aaabacadaeaf\
+             061369bbd5a881cd92aaa885b0bacd95ffc4dbdc250201010410a0a1a2a3a4a5a6a7a8a9aaabacadaeaf\
              04204d25c7ca32f94e9ee1161e0bf25479b29d84092251e4f7cec000a883ecb96a4c",
-            "c982fa3786b88f77c51759934aa50be616fe3df328e1c393f001e4ce1498664c",
+            "9efb0962d2e7853f66742f8055d97d353d0cf9c8759ebd6793b98846e00234c3",
         ),
         (
             Scheme::MlKem768X25519,
             "3074300b060960864801650304012d020120a0620460305e0c0f53636f6d6d2d434d532d4b454b5249\
-             0614698397a1a2cbe2a5aab9af83d7d6a6919edab3670201010410a0a1a2a3a4a5a6a7a8a9aaabacadaeaf\
+             06146981888790f19bae8a94cf90a3cc989fd3d4d46e0201010410a0a1a2a3a4a5a6a7a8a9aaabacadaeaf\
              04204d25c7ca32f94e9ee1161e0bf25479b29d84092251e4f7cec000a883ecb96a4c",
-            "3407e9ac3c03d770024baa73409e758741236c9e1aa702c3166ccc51f69eb326",
+            "13c2da9281aad70a71a8d87d2f44a37a504134b8b97c6581e7792cd0fd90855a",
         ),
     ];
     for (scheme, info, kek) in cases {

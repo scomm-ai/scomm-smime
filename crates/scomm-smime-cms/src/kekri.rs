@@ -159,12 +159,11 @@ impl Scheme {
         }
     }
 
-    /// The only place the scheme OIDs are written down. TEST-ONLY identifiers under the `2.25` UUID arc. Q-A assigns the final
-    /// OIDs; nothing written with these values ships.
+    /// Permanent UUIDv4-based scheme identifiers under ITU-T X.667's `2.25` arc.
     fn oid(self) -> &'static CStr {
         match self {
-            Scheme::X25519 => c"2.25.80488505945035284461607638844137508858",
-            Scheme::MlKem768X25519 => c"2.25.270670646154222178413742116371986553319",
+            Scheme::X25519 => c"2.25.39655194209308751609602662857696538149",
+            Scheme::MlKem768X25519 => c"2.25.90424534707360863475365937468274977390",
         }
     }
 
