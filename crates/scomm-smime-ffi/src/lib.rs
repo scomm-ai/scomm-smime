@@ -7,7 +7,7 @@ use std::slice;
 
 use scomm_smime_cms::{
     add_mldsa_certificates, cert_info, check_certificate, set_trust_roots, CmsSmime,
-    MAX_PLAINTEXT_LEN,
+    DecryptEnvelope, MAX_PLAINTEXT_LEN,
 };
 use scomm_smime_core::*;
 use serde_json::json;
@@ -731,6 +731,215 @@ pub unsafe extern "C" fn scomm_smime_decrypt_ex(
     })
 }
 
+// Added independently of the existing ABI version and verdict payload.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_decrypt_with_details_v1(
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    passphrase: *const u8,
+    passphrase_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    format: *mut *mut u8,
+    format_len: *mut usize,
+    details: *mut *mut u8,
+    details_len: *mut usize,
+) -> i32 {
+    if out.is_null()
+        || out_len.is_null()
+        || format.is_null()
+        || format_len.is_null()
+        || details.is_null()
+        || details_len.is_null()
+    {
+        return 1;
+    }
+    *out = ptr::null_mut();
+    *out_len = 0;
+    *format = ptr::null_mut();
+    *format_len = 0;
+    *details = ptr::null_mut();
+    *details_len = 0;
+    run(|| {
+        clear_error();
+        let _ = (passphrase, passphrase_len);
+        let mut envelope = DecryptEnvelope::default();
+        let opened = engine().decrypt_with_details(
+            read_slice(ciphertext, ciphertext_len),
+            read_slice(private_key, private_key_len),
+            &mut envelope,
+        );
+        let mut evidence = json!({});
+        if let Some(format) = envelope.format {
+            evidence["container"] = json!({"state":"declared","value":format});
+        }
+        if let Some(count) = envelope.recipient_records {
+            evidence["recipientRecordCount"] = json!({"state":"declared","value":count});
+        }
+        let pt = match opened {
+            Ok(result) => result,
+            Err(error) => {
+                let (state, reason) = match error {
+                    SmimeError::UnsupportedAlgorithm(_) => ("unsupported", "unsupported_algorithm"),
+                    SmimeError::WrongPrivateKey => ("failed", "no_matching_key"),
+                    SmimeError::InvalidKey(_) => ("failed", "key_unavailable"),
+                    SmimeError::MalformedMessage => ("failed", "malformed_message"),
+                    _ => ("failed", "decryption_failed"),
+                };
+                evidence["failure"] = json!({"state":"observed","value":reason});
+                let report = json!({
+                    "version": 1, "protocol": "smime", "source": "native_operation",
+                    "operation": "decrypt", "state": state, "evidence": evidence,
+                })
+                .to_string();
+                write_buf(report.as_bytes(), details, details_len);
+                return Err(error);
+            }
+        };
+        let meta = json!({"format": pt.format, "algorithm": pt.algorithm}).to_string();
+        let integrity = match pt.format.as_str() {
+            FORMAT_F1 => json!({"state":"verified","value":"aead_passed"}),
+            FORMAT_F0_STD | FORMAT_F0_SCOMM => {
+                json!({"state":"observed","value":"no_authenticated_integrity"})
+            }
+            _ => json!({"state":"unavailable"}),
+        };
+        evidence["format"] = json!({"state":"observed","value":pt.format});
+        evidence["integrity"] = integrity;
+        let evidence = json!({
+            "version": 1, "protocol": "smime", "source": "native_operation",
+            "operation": "decrypt", "state": "succeeded", "evidence": evidence,
+        })
+        .to_string();
+        write_buf(&pt.plaintext, out, out_len);
+        write_buf(meta.as_bytes(), format, format_len);
+        write_buf(evidence.as_bytes(), details, details_len);
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_verify_detached_with_details_v1(
+    data: *const u8,
+    data_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    public_key: *const u8,
+    public_key_len: usize,
+    sender: *const u8,
+    sender_len: usize,
+    verdict: *mut *mut u8,
+    verdict_len: *mut usize,
+    details: *mut *mut u8,
+    details_len: *mut usize,
+) -> i32 {
+    if verdict.is_null() || verdict_len.is_null() || details.is_null() || details_len.is_null() {
+        return 1;
+    }
+    *verdict = ptr::null_mut();
+    *verdict_len = 0;
+    *details = ptr::null_mut();
+    *details_len = 0;
+    run(|| {
+        clear_error();
+        let sender = read_opt_str(sender, sender_len);
+        let key = (!public_key.is_null() && public_key_len > 0)
+            .then(|| read_slice(public_key, public_key_len));
+        let (result, algorithms) = engine().verify_detached_with_details(
+            read_slice(data, data_len),
+            read_slice(signature, signature_len),
+            key,
+            sender.as_deref(),
+        )?;
+        let valid = result.validity == SignatureValidity::CryptographicallyValid;
+        let mut evidence = json!({});
+        if valid {
+            evidence["signatureValidity"] = json!({"state":"verified","value":"valid"});
+            if let Some(fp) = result.signer_fingerprint.as_ref() {
+                evidence["signerSpkiFingerprint"] = json!({"state":"verified","value":fp});
+            }
+        }
+        let provenance = if valid { "observed" } else { "declared" };
+        for (field, oid) in [
+            ("digestAlgorithm", algorithms.digest_oid),
+            ("signatureAlgorithm", algorithms.signature_oid),
+        ] {
+            if let Some(oid) = oid {
+                evidence[field] = json!({
+                    "state":provenance, "value":{"namespace":"oid","id":oid},
+                });
+            }
+        }
+        let state = match result.validity {
+            SignatureValidity::CryptographicallyValid => "succeeded",
+            SignatureValidity::UnsupportedAlgorithm => "unsupported",
+            SignatureValidity::UnknownSigner => "incomplete",
+            _ => "failed",
+        };
+        let metadata = json!({
+            "version": 1, "protocol": "smime", "source": "native_operation",
+            "operation": "verify_detached", "state": state, "evidence": evidence,
+        })
+        .to_string();
+        write_buf(verdict_json(&result).as_bytes(), verdict, verdict_len);
+        write_buf(metadata.as_bytes(), details, details_len);
+        Ok(0)
+    })
+}
+
+/// Only complete DER envelopes are supported by this metadata-only reader.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_inspect_public_envelope_v1(
+    envelope: *const u8,
+    envelope_len: usize,
+    input_kind: u32,
+    input_extent: u32,
+    details: *mut *mut u8,
+    details_len: *mut usize,
+) -> i32 {
+    if details.is_null() || details_len.is_null() {
+        return 1;
+    }
+    *details = ptr::null_mut();
+    *details_len = 0;
+    if envelope.is_null()
+        || envelope_len == 0
+        || !matches!(input_kind, 1 | 2)
+        || !matches!(input_extent, 1 | 2)
+    {
+        return 1;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut report = json!({
+            "version": 1, "protocol": "smime", "source": "public_inspection",
+            "operation": "inspect_public_envelope", "state": "unavailable", "evidence": {},
+        });
+        if input_kind != 1 || input_extent != 1 {
+            report["limit"] = json!("unsupported_input_extent");
+        } else if envelope_len > 16 * 1024 {
+            report["limit"] = json!("input_bytes");
+        } else {
+            match scomm_smime_cms::inspect_public_envelope(read_slice(envelope, envelope_len)) {
+                Ok((format, oid, version, count)) => {
+                    report["state"] = json!("complete");
+                    report["evidence"] = json!({
+                        "container": {"state":"declared","value":format},
+                        "contentCipher": {"state":"declared","value":{"namespace":"oid","id":oid}},
+                        "containerVersion": {"state":"declared","value":version},
+                        "recipientRecordCount": {"state":"declared","value":count},
+                    });
+                }
+                Err(_) => report["state"] = json!("malformed"),
+            }
+        }
+        write_buf(report.to_string().as_bytes(), details, details_len);
+        0
+    }))
+    .unwrap_or(2)
+}
+
 /// Largest plaintext `scomm_smime_encrypt` accepts (ABI 3). Anything the
 /// engine writes within it can be read back.
 #[no_mangle]
@@ -741,7 +950,7 @@ pub extern "C" fn scomm_smime_max_plaintext_len() -> usize {
 /// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
 /// in the one client library.
 pub fn link_anchor() -> usize {
-    let exports: [*const (); 24] = [
+    let exports: [*const (); 27] = [
         scomm_smime_buffer_free as *const (),
         scomm_smime_last_error as *const (),
         scomm_smime_inspect as *const (),
@@ -765,6 +974,9 @@ pub fn link_anchor() -> usize {
         scomm_smime_check_certificate as *const (),
         scomm_smime_add_mldsa_certificates as *const (),
         scomm_smime_decrypt_ex as *const (),
+        scomm_smime_decrypt_with_details_v1 as *const (),
+        scomm_smime_inspect_public_envelope_v1 as *const (),
+        scomm_smime_verify_detached_with_details_v1 as *const (),
         scomm_smime_max_plaintext_len as *const (),
     ];
     exports

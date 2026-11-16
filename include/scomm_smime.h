@@ -132,6 +132,20 @@ int32_t scomm_smime_pop_hybrid_shared(
     const uint8_t *ephemeral_x25519, size_t ephemeral_x25519_len,
     uint8_t **out, size_t *out_len);
 
+/* Optional evidence JSON can be returned on error. Free every non-NULL buffer
+   with scomm_smime_buffer_free regardless of the return code. */
+int32_t scomm_smime_decrypt_with_details_v1(const uint8_t *ciphertext, size_t ciphertext_len,
+    const uint8_t *private_key, size_t private_key_len,
+    const uint8_t *passphrase, size_t passphrase_len, uint8_t **out, size_t *out_len,
+    uint8_t **format, size_t *format_len, uint8_t **details, size_t *details_len);
+int32_t scomm_smime_verify_detached_with_details_v1(const uint8_t *data, size_t data_len,
+    const uint8_t *signature, size_t signature_len, const uint8_t *public_key, size_t public_key_len,
+    const uint8_t *sender, size_t sender_len, uint8_t **verdict, size_t *verdict_len,
+    uint8_t **details, size_t *details_len);
+
+int32_t scomm_smime_inspect_public_envelope_v1(const uint8_t *envelope, size_t envelope_len,
+    uint32_t input_kind, uint32_t input_extent, uint8_t **details, size_t *details_len);
+
 #ifdef __cplusplus
 }
 #endif

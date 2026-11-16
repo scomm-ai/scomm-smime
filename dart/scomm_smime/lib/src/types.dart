@@ -1,10 +1,13 @@
 import 'dart:typed_data';
 
 class ScommSmimeException implements Exception {
-  ScommSmimeException(this.code, this.message);
+  ScommSmimeException(this.code, this.message, {this.evidence});
 
   final int code;
   final String message;
+
+  /// Optional sanitized evidence from the failed native operation.
+  final Map<String, Object?>? evidence;
 
   @override
   String toString() => 'ScommSmimeException($code): $message';

@@ -11,6 +11,80 @@ import 'types.dart';
 /// trust roots, ML-DSA migration and decrypt-with-format symbols.
 const int scommSmimeAbiTrust = 3;
 
+typedef _DetailsDecryptN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DetailsDecryptD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DetailsVerifyN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DetailsVerifyD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+
+typedef _DetailsInspectN = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Size,
+  ffi.Uint32,
+  ffi.Uint32,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+typedef _DetailsInspectD = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  int,
+  int,
+  ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+  ffi.Pointer<ffi.Size>,
+);
+
 typedef _AbiVersionN = ffi.Uint32 Function();
 typedef _VerifyDetachedN = ffi.Int32 Function(
   ffi.Pointer<ffi.Uint8>,
@@ -323,9 +397,7 @@ class ScommSmime {
           'scomm_smime_decrypt',
         ),
         _sign = _lib.lookupFunction<_SignAlgN, _SignAlgD>('scomm_smime_sign'),
-        _verify = _lib.lookupFunction<_VerifyN, _VerifyD>(
-          'scomm_smime_verify',
-        ),
+        _verify = _lib.lookupFunction<_VerifyN, _VerifyD>('scomm_smime_verify'),
         _inspectMessage = _lib.lookupFunction<_InspectN, _InspectD>(
           'scomm_smime_inspect_message',
         ),
@@ -374,16 +446,19 @@ class ScommSmime {
   // working against an ABI 2 library until the native rev is bumped.
   late final _VerifyDetachedD _verifyDetached =
       _lib.lookupFunction<_VerifyDetachedN, _VerifyDetachedD>(
-          'scomm_smime_verify_detached');
+    'scomm_smime_verify_detached',
+  );
   late final _SignAlgD _signDetached =
       _lib.lookupFunction<_SignAlgN, _SignAlgD>('scomm_smime_sign_detached');
-  late final _InspectD _certInfo =
-      _lib.lookupFunction<_InspectN, _InspectD>('scomm_smime_cert_info');
+  late final _InspectD _certInfo = _lib.lookupFunction<_InspectN, _InspectD>(
+    'scomm_smime_cert_info',
+  );
   late final _SetRootsD _setTrustRoots = _lib
       .lookupFunction<_SetRootsN, _SetRootsD>('scomm_smime_set_trust_roots');
   late final _CheckCertD _checkCertificate =
       _lib.lookupFunction<_CheckCertN, _CheckCertD>(
-          'scomm_smime_check_certificate');
+    'scomm_smime_check_certificate',
+  );
   late final _TwoInD _addMldsaCertificates = _lib
       .lookupFunction<_TwoInN, _TwoInD>('scomm_smime_add_mldsa_certificates');
   late final int Function() _maxPlaintextLen =
@@ -520,7 +595,14 @@ class ScommSmime {
       final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
       final outLen = arena<ffi.Size>();
       final code = _checkCertificate(
-          c.ptr, c.len, e.ptr, e.len, purpose.wire, outPtr, outLen);
+        c.ptr,
+        c.len,
+        e.ptr,
+        e.len,
+        purpose.wire,
+        outPtr,
+        outLen,
+      );
       if (code != 0) {
         throw ScommSmimeException(code, _readLastError());
       }
@@ -543,8 +625,14 @@ class ScommSmime {
       final e = _copy(arena, utf8.encode(email));
       final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
       final outLen = arena<ffi.Size>();
-      final code =
-          _addMldsaCertificates(sk.ptr, sk.len, e.ptr, e.len, outPtr, outLen);
+      final code = _addMldsaCertificates(
+        sk.ptr,
+        sk.len,
+        e.ptr,
+        e.len,
+        outPtr,
+        outLen,
+      );
       if (code != 0) {
         throw ScommSmimeException(code, _readLastError());
       }
@@ -584,8 +672,9 @@ class ScommSmime {
         throw ScommSmimeException(code, _readLastError());
       }
       final plaintext = Uint8List.fromList(_take(outPtr.value, outLen.value));
-      final meta = jsonDecode(utf8.decode(_take(jsonPtr.value, jsonLen.value)))
-          as Map<String, dynamic>;
+      final meta = jsonDecode(
+        utf8.decode(_take(jsonPtr.value, jsonLen.value)),
+      ) as Map<String, dynamic>;
       return SmimeDecryptResult(
         plaintext: plaintext,
         format: meta['format'] as String? ?? '',
@@ -770,10 +859,7 @@ class ScommSmime {
     });
   }
 
-  void testPassphrase({
-    required List<int> privateKey,
-    String passphrase = '',
-  }) {
+  void testPassphrase({required List<int> privateKey, String passphrase = ''}) {
     using((arena) {
       final sk = _copy(arena, privateKey);
       final pass = _copy(arena, utf8.encode(passphrase));
@@ -934,6 +1020,192 @@ class ScommSmime {
       final outLen = arena<ffi.Size>();
       _lastError(outPtr, outLen);
       return utf8.decode(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  late final _DetailsDecryptD? _detailsDecrypt =
+      _lib.providesSymbol('scomm_smime_decrypt_with_details_v1')
+          ? _lib.lookupFunction<_DetailsDecryptN, _DetailsDecryptD>(
+              'scomm_smime_decrypt_with_details_v1',
+            )
+          : null;
+
+  late final _DetailsVerifyD? _detailsVerify =
+      _lib.providesSymbol('scomm_smime_verify_detached_with_details_v1')
+          ? _lib.lookupFunction<_DetailsVerifyN, _DetailsVerifyD>(
+              'scomm_smime_verify_detached_with_details_v1',
+            )
+          : null;
+
+  late final _DetailsInspectD? _detailsInspect =
+      _lib.providesSymbol('scomm_smime_inspect_public_envelope_v1')
+          ? _lib.lookupFunction<_DetailsInspectN, _DetailsInspectD>(
+              'scomm_smime_inspect_public_envelope_v1',
+            )
+          : null;
+
+  /// Optional versioned native metadata. A malformed diagnostic cannot
+  /// change the independently decoded operation result.
+  Map<String, Object?>? _takeSecurityEvidence(
+    ffi.Pointer<ffi.Uint8> pointer,
+    int length,
+  ) {
+    if (pointer == ffi.nullptr) return null;
+    try {
+      if (length <= 0 || length > 16 * 1024) return null;
+      final parsed = jsonDecode(utf8.decode(pointer.asTypedList(length)));
+      if (parsed is! Map<String, Object?> || parsed['version'] != 1)
+        return null;
+      return parsed;
+    } on FormatException {
+      return null;
+    } finally {
+      _bufferFree(pointer, length);
+    }
+  }
+
+  /// Inspects a complete small artifact without using a key or decrypting.
+  /// A null result means this engine has no compatible metadata support.
+  Map<String, Object?>? inspectPublicEnvelope(
+    List<int> envelope,
+  ) {
+    final inspect = _detailsInspect;
+    if (inspect == null || envelope.isEmpty || envelope.length > 16 * 1024) {
+      return null;
+    }
+    return using((arena) {
+      final input = _copy(arena, envelope);
+      final out = arena<ffi.Pointer<ffi.Uint8>>();
+      final length = arena<ffi.Size>();
+      final status = inspect(
+        input.ptr,
+        input.len,
+        1,
+        1,
+        out,
+        length,
+      );
+      final details = _takeSecurityEvidence(out.value, length.value);
+      return status == 0 ? details : null;
+    });
+  }
+
+  ({SmimeSignatureVerdict verdict, Map<String, Object?>? evidence})
+      verifyWithDetails({
+    required List<int> data,
+    required List<int> signature,
+    List<int>? publicKey,
+    String? sender,
+  }) {
+    final verify = _detailsVerify;
+    if (verify == null) {
+      return (
+        verdict: verifyDetached(
+          data: data,
+          signature: signature,
+          publicKey: publicKey,
+          sender: sender,
+        ),
+        evidence: null,
+      );
+    }
+    return using((arena) {
+      final body = _copy(arena, data);
+      final sig = _copy(arena, signature);
+      final key = _copy(arena, publicKey ?? const []);
+      final address = _copy(arena, utf8.encode(sender ?? ""));
+      final verdict = arena<ffi.Pointer<ffi.Uint8>>();
+      final verdictLength = arena<ffi.Size>();
+      final evidence = arena<ffi.Pointer<ffi.Uint8>>();
+      final evidenceLength = arena<ffi.Size>();
+      final code = verify(
+        body.ptr,
+        body.len,
+        sig.ptr,
+        sig.len,
+        key.ptr,
+        key.len,
+        address.ptr,
+        address.len,
+        verdict,
+        verdictLength,
+        evidence,
+        evidenceLength,
+      );
+      final details = _takeSecurityEvidence(
+        evidence.value,
+        evidenceLength.value,
+      );
+      final bytes = _take(verdict.value, verdictLength.value);
+      if (code != 0) throw ScommSmimeException(code, _readLastError());
+      return (
+        verdict: SmimeSignatureVerdict.fromJson(
+          jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>,
+        ),
+        evidence: details,
+      );
+    });
+  }
+
+  ({SmimeDecryptResult result, Map<String, Object?>? evidence})
+      decryptWithDetails({
+    required List<int> ciphertext,
+    required List<int> privateKey,
+    String passphrase = '',
+  }) {
+    final open = _detailsDecrypt;
+    if (open == null) {
+      return (
+        result: decryptWithFormat(
+          ciphertext: ciphertext,
+          privateKey: privateKey,
+          passphrase: passphrase,
+        ),
+        evidence: null,
+      );
+    }
+    return using((arena) {
+      final ct = _copy(arena, ciphertext);
+      final key = _copy(arena, privateKey);
+      final pass = _copy(arena, utf8.encode(passphrase));
+      final plaintext = arena<ffi.Pointer<ffi.Uint8>>();
+      final plaintextLength = arena<ffi.Size>();
+      final format = arena<ffi.Pointer<ffi.Uint8>>();
+      final formatLength = arena<ffi.Size>();
+      final evidence = arena<ffi.Pointer<ffi.Uint8>>();
+      final evidenceLength = arena<ffi.Size>();
+      final code = open(
+        ct.ptr,
+        ct.len,
+        key.ptr,
+        key.len,
+        pass.ptr,
+        pass.len,
+        plaintext,
+        plaintextLength,
+        format,
+        formatLength,
+        evidence,
+        evidenceLength,
+      );
+      final details = _takeSecurityEvidence(
+        evidence.value,
+        evidenceLength.value,
+      );
+      final bytes = _take(plaintext.value, plaintextLength.value);
+      final formatBytes = _take(format.value, formatLength.value);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError(), evidence: details);
+      }
+      final meta = jsonDecode(utf8.decode(formatBytes)) as Map<String, dynamic>;
+      return (
+        result: SmimeDecryptResult(
+          plaintext: Uint8List.fromList(bytes),
+          format: meta['format'] as String? ?? '',
+          algorithm: meta['algorithm'] as String? ?? '',
+        ),
+        evidence: details,
+      );
     });
   }
 

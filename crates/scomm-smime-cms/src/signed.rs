@@ -254,6 +254,30 @@ unsafe fn digest_is_weak(alg: *mut ffi::X509_ALGOR) -> bool {
     matches!(ffi::OBJ_obj2nid(obj), ffi::NID_sha1 | ffi::NID_md5)
 }
 
+#[derive(Default)]
+pub struct SignatureAlgorithms {
+    pub digest_oid: Option<String>,
+    pub signature_oid: Option<String>,
+}
+
+unsafe fn algorithm_oid(algorithm: *const ffi::X509_ALGOR) -> Option<String> {
+    if algorithm.is_null() {
+        return None;
+    }
+    let mut oid = ptr::null();
+    ffi::X509_ALGOR_get0(&mut oid, ptr::null_mut(), ptr::null_mut(), algorithm);
+    if oid.is_null() {
+        return None;
+    }
+    let mut text = [0u8; 128];
+    let len = ffi::OBJ_obj2txt(text.as_mut_ptr().cast(), text.len() as _, oid, 1);
+    let len = usize::try_from(len).ok()?;
+    if len == 0 || len >= text.len() {
+        return None;
+    }
+    std::str::from_utf8(&text[..len]).ok().map(str::to_owned)
+}
+
 /// S1 verdict for a detached SignedData over `data` (task 3.2). The signer
 /// certificate comes from the message, or from `known` (certificates the
 /// app already holds for the sender) when the message carries none.
@@ -263,6 +287,16 @@ pub(crate) fn verify(
     der: &[u8],
     known: &[X509],
     sender: Option<&str>,
+) -> Result<SignatureVerdict> {
+    verify_with_algorithms(data, der, known, sender, None)
+}
+
+pub(crate) fn verify_with_algorithms(
+    data: &[u8],
+    der: &[u8],
+    known: &[X509],
+    sender: Option<&str>,
+    algorithms: Option<&mut SignatureAlgorithms>,
 ) -> Result<SignatureVerdict> {
     let base = SignatureVerdict {
         format: Some(SignatureFormat::S1),
@@ -292,6 +326,10 @@ pub(crate) fn verify(
             ptr::null_mut(),
         );
         CMS_SignerInfo_get0_algs(si, &mut pk, &mut signer, &mut dig, &mut sig);
+        if let Some(algorithms) = algorithms {
+            algorithms.digest_oid = algorithm_oid(dig);
+            algorithms.signature_oid = algorithm_oid(sig);
+        }
         let _ = openssl::error::ErrorStack::get();
         if signer.is_null() {
             return Ok(SignatureVerdict {

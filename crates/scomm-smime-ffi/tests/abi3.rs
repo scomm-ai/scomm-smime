@@ -115,6 +115,44 @@ fn sign_detached_then_verify_detached() {
     assert_eq!(v["revocation"], "not-checked");
     assert_eq!(v["signer_fingerprint"].as_str().unwrap().len(), 64);
 
+    let (mut details_ptr, mut details_len) = (ptr::null_mut(), 0);
+    let (code, new_verdict) = take(|o, l| unsafe {
+        scomm_smime_verify_detached_with_details_v1(
+            DATA.as_ptr(),
+            DATA.len(),
+            sig.as_ptr(),
+            sig.len(),
+            public.as_ptr(),
+            public.len(),
+            sender.as_ptr(),
+            sender.len(),
+            o,
+            l,
+            &mut details_ptr,
+            &mut details_len,
+        )
+    });
+    assert_eq!(code, 0);
+    assert_eq!(json(&new_verdict), v);
+    assert!(!details_ptr.is_null());
+    let details = unsafe {
+        let result = json(std::slice::from_raw_parts(details_ptr, details_len));
+        scomm_smime_buffer_free(details_ptr, details_len);
+        result
+    };
+    assert_eq!(details["source"], "native_operation");
+    assert_eq!(
+        details["evidence"]["signatureValidity"]["state"],
+        "verified"
+    );
+    assert!(details["evidence"].get("signer_cert_pem").is_none());
+    if s1 {
+        assert_eq!(
+            details["evidence"]["signatureAlgorithm"]["value"]["id"],
+            "1.3.101.112"
+        );
+    }
+
     // Without a key and sender: S1 is checked against the certificate it
     // carries; S0 cannot be checked, and nothing fails.
     let (code, verdict) = take(|o, l| unsafe {
@@ -264,6 +302,32 @@ fn decrypt_ex_reports_the_format() {
         )
     });
     assert_eq!(code, 0);
+    let (inspected, report) = take(|out, len| unsafe {
+        scomm_smime_inspect_public_envelope_v1(cms.as_ptr(), cms.len(), 1, 1, out, len)
+    });
+    assert_eq!(inspected, 0);
+    let report = json(&report);
+    let f1 = scomm_smime_cms::RELEASE_2_WRITERS;
+    assert_eq!(report["source"], "public_inspection");
+    assert_eq!(report["state"], "complete");
+    assert_eq!(report["evidence"]["contentCipher"]["state"], "declared");
+    assert!(report["evidence"].get("integrity").is_none());
+    if f1 {
+        assert_eq!(
+            report["evidence"]["contentCipher"]["value"]["id"],
+            "2.16.840.1.101.3.4.1.46"
+        );
+    }
+    let large = vec![0u8; 16 * 1024 + 1];
+    let (_, limited) = take(|out, len| unsafe {
+        scomm_smime_inspect_public_envelope_v1(large.as_ptr(), large.len(), 1, 1, out, len)
+    });
+    assert_eq!(json(&limited)["limit"], "input_bytes");
+    let (_, truncated) = take(|out, len| unsafe {
+        scomm_smime_inspect_public_envelope_v1(cms.as_ptr(), cms.len() - 1, 1, 1, out, len)
+    });
+    assert_eq!(json(&truncated)["state"], "malformed");
+
     let mut meta = (ptr::null_mut(), 0usize);
     let (code, plaintext) = take(|o, l| unsafe {
         scomm_smime_decrypt_ex(
@@ -285,6 +349,71 @@ fn decrypt_ex_reports_the_format() {
     unsafe { scomm_smime_buffer_free(meta.0, meta.1) };
     let f1 = scomm_smime_cms::RELEASE_2_WRITERS;
     assert_eq!(json(&m)["format"], if f1 { "f1" } else { "f0-scomm" });
+
+    let mut format = (ptr::null_mut(), 0usize);
+    let mut details = (ptr::null_mut(), 0usize);
+    let (code, plaintext) = take(|o, l| unsafe {
+        scomm_smime_decrypt_with_details_v1(
+            cms.as_ptr(),
+            cms.len(),
+            secret.as_ptr(),
+            secret.len(),
+            ptr::null(),
+            0,
+            o,
+            l,
+            &mut format.0,
+            &mut format.1,
+            &mut details.0,
+            &mut details.1,
+        )
+    });
+    assert_eq!(code, 0);
+    assert_eq!(plaintext, DATA);
+    let read_json = |(ptr, len): (*mut u8, usize)| unsafe {
+        assert!(!ptr.is_null());
+        let decoded = json(std::slice::from_raw_parts(ptr, len));
+        scomm_smime_buffer_free(ptr, len);
+        decoded
+    };
+    assert_eq!(read_json(format), json(&m));
+    let integrity = &read_json(details)["evidence"]["integrity"];
+    assert_eq!(integrity["state"], if f1 { "verified" } else { "observed" });
+    assert_eq!(
+        integrity["value"],
+        if f1 {
+            "aead_passed"
+        } else {
+            "no_authenticated_integrity"
+        }
+    );
+
+    let (_, other_secret) = pqc_key_for(b"Other <other@example.com>");
+    format = (ptr::null_mut(), 0);
+    details = (ptr::null_mut(), 0);
+    let (code, plaintext) = take(|o, l| unsafe {
+        scomm_smime_decrypt_with_details_v1(
+            cms.as_ptr(),
+            cms.len(),
+            other_secret.as_ptr(),
+            other_secret.len(),
+            ptr::null(),
+            0,
+            o,
+            l,
+            &mut format.0,
+            &mut format.1,
+            &mut details.0,
+            &mut details.1,
+        )
+    });
+    assert_ne!(code, 0);
+    assert!(plaintext.is_empty());
+    assert!(format.0.is_null() && format.1 == 0);
+    let failure = read_json(details);
+    assert_eq!(failure["evidence"]["container"]["state"], "declared");
+    assert_eq!(failure["evidence"]["failure"]["state"], "observed");
+    assert!(failure["evidence"].get("integrity").is_none());
 
     // A failure leaves both buffers empty.
     let mut broken = cms.clone();

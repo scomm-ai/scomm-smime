@@ -12,9 +12,10 @@ mod signed;
 mod trust;
 
 pub use certinfo::{cert_info, CertInfo};
-pub use classify::{MAX_MESSAGE_LEN, MAX_PLAINTEXT_LEN};
+pub use classify::{inspect_public_envelope, MAX_MESSAGE_LEN, MAX_PLAINTEXT_LEN};
 pub use pqc::add_mldsa_certificates;
 pub use trust::{check_certificate, set_trust_roots};
+pub use signed::SignatureAlgorithms;
 
 use scomm_smime_core::*;
 
@@ -35,11 +36,41 @@ use signed::SignAlg;
 /// exercised by tests. RSA PKCS#1 v1.5 is S1 in both releases.
 pub const RELEASE_2_WRITERS: bool = true;
 
+#[derive(Default)]
+pub struct DecryptEnvelope {
+    pub format: Option<&'static str>,
+    pub recipient_records: Option<usize>,
+}
+
 pub struct CmsSmime;
 
 impl CmsSmime {
     pub fn new() -> Self {
         Self
+    }
+    pub fn decrypt_with_details(
+        &self,
+        ciphertext: &[u8],
+        private_key: &[u8],
+        envelope: &mut DecryptEnvelope,
+    ) -> Result<DecryptResult> {
+        let bundle = KeyBundle::parse(private_key)?;
+        cms_envelop::decrypt_with_envelope(ciphertext, &bundle, Some(envelope))
+    }
+
+    pub fn verify_detached_with_details(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        public_key: Option<&[u8]>,
+        sender: Option<&str>,
+    ) -> Result<(SignatureVerdict, SignatureAlgorithms)> {
+        let bundle = public_key.map(KeyBundle::parse).transpose()?;
+        let mut algorithms = SignatureAlgorithms::default();
+        let verdict = cms_envelop::verify_detached_with_algorithms(
+            data, signature, bundle.as_ref(), sender, Some(&mut algorithms),
+        )?;
+        Ok((verdict, algorithms))
     }
 }
 

@@ -184,3 +184,73 @@ fn oid_text(obj: *const openssl_sys::ASN1_OBJECT) -> String {
     let n = (n.max(0) as usize).min(buf.len() - 1);
     String::from_utf8_lossy(&buf[..n]).into_owned()
 }
+
+/// Public fields from a small definite-length CMS envelope. Ciphertext,
+/// originator certificates and recipient values stay opaque.
+pub fn inspect_public_envelope(input: &[u8]) -> Result<(&'static str, String, u8, usize)> {
+    use yasna::{ASN1Error, ASN1ErrorKind, Tag};
+    let invalid = || ASN1Error::new(ASN1ErrorKind::Invalid);
+    if input.len() > 16 * 1024 {
+        return Err(too_large());
+    }
+    yasna::parse_der(input, |r| {
+        r.read_sequence(|r| {
+            let kind = r.next().read_oid()?;
+            let format = match kind.to_string().as_str() {
+                OID_ENVELOPED => "enveloped_data",
+                OID_AUTH_ENVELOPED => "auth_enveloped_data",
+                _ => return Err(invalid()),
+            };
+            r.next().read_tagged(Tag::context(0), |r| {
+                r.read_sequence(|r| {
+                    let version = r.next().read_u8()?;
+                    r.read_optional(|r| {
+                        if r.lookahead_tag()? != Tag::context(0) {
+                            return Err(invalid());
+                        }
+                        r.read_der()
+                    })?;
+                    let mut recipients = 0;
+                    r.next().read_set_of(|r| {
+                        if recipients == 64 {
+                            return Err(invalid());
+                        }
+                        r.read_der()?;
+                        recipients += 1;
+                        Ok(())
+                    })?;
+                    if recipients == 0 {
+                        return Err(invalid());
+                    }
+                    let mut oid = String::new();
+                    r.next().read_sequence(|r| {
+                        r.next().read_oid()?;
+                        oid = r.next().read_sequence(|r| {
+                            let oid = r.next().read_oid()?.to_string();
+                            if oid.len() > 127 {
+                                return Err(invalid());
+                            }
+                            r.read_optional(|r| r.read_der())?;
+                            Ok(oid)
+                        })?;
+                        r.read_optional(|r| {
+                            if r.lookahead_tag()? != Tag::context(0) {
+                                return Err(invalid());
+                            }
+                            r.read_der()
+                        })?;
+                        Ok(())
+                    })?;
+                    // Bounded outer attributes and MAC. No child object is decoded.
+                    for _ in 0..3 {
+                        if r.read_optional(|r| r.read_der())?.is_none() {
+                            break;
+                        }
+                    }
+                    Ok((format, oid, version, recipients))
+                })
+            })
+        })
+    })
+    .map_err(|_| SmimeError::MalformedMessage)
+}

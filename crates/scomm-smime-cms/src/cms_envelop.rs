@@ -73,7 +73,30 @@ pub fn inspect_cms(cms: &[u8]) -> Result<MessageInfo> {
 }
 
 pub fn decrypt_with_bundle(cms: &[u8], bundle: &KeyBundle) -> Result<DecryptResult> {
+    decrypt_with_envelope(cms, bundle, None)
+}
+
+pub(crate) fn decrypt_with_envelope(
+    cms: &[u8],
+    bundle: &KeyBundle,
+    envelope: Option<&mut crate::DecryptEnvelope>,
+) -> Result<DecryptResult> {
     let parsed = classify(cms)?;
+    if let (
+        Some(envelope),
+        Kind::Enveloped {
+            authenticated,
+            recipients,
+        },
+    ) = (envelope, &parsed.kind)
+    {
+        envelope.format = Some(if *authenticated {
+            "auth_enveloped_data"
+        } else {
+            "enveloped_data"
+        });
+        envelope.recipient_records = Some(recipients.len());
+    }
     match &parsed.kind {
         Kind::Enveloped {
             authenticated,
@@ -141,6 +164,16 @@ pub fn verify_detached(
     public: Option<&KeyBundle>,
     sender: Option<&str>,
 ) -> Result<SignatureVerdict> {
+    verify_detached_with_algorithms(data, signature, public, sender, None)
+}
+
+pub(crate) fn verify_detached_with_algorithms(
+    data: &[u8],
+    signature: &[u8],
+    public: Option<&KeyBundle>,
+    sender: Option<&str>,
+    algorithms: Option<&mut signed::SignatureAlgorithms>,
+) -> Result<SignatureVerdict> {
     let parsed = match classify(signature) {
         Ok(p) => p,
         Err(SmimeError::MalformedMessage) => return Ok(SignatureVerdict::malformed()),
@@ -155,7 +188,7 @@ pub fn verify_detached(
                 .filter_map(|e| X509::from_pem(e.cert_pem.as_bytes()).ok())
                 .collect();
             let _ = openssl::error::ErrorStack::get();
-            signed::verify(data, &parsed.der, &known, sender)
+            signed::verify_with_algorithms(data, &parsed.der, &known, sender, algorithms)
         }
         Kind::LegacySigned { .. } => match public {
             Some(bundle) => legacy::verify(data, &parsed.der, bundle),
