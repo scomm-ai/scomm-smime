@@ -179,7 +179,7 @@ impl SmimeProvider for CmsSmime {
         options: &EncryptOptions,
     ) -> Result<Vec<u8>> {
         let mut chosen: Vec<crate::bundle::KeyEntry> = Vec::new();
-        for pk in recipient_public_keys {
+        for (index, pk) in recipient_public_keys.iter().enumerate() {
             let bundle = KeyBundle::parse(pk)?;
             let pqc = bundle
                 .encryption_entries()
@@ -201,6 +201,10 @@ impl SmimeProvider for CmsSmime {
                 chosen.push(x);
             } else if let Some(rsa) = rsa {
                 chosen.push(rsa);
+            } else {
+                // Never drop a supplied recipient while still encrypting to the
+                // others (audit CMS-01): they could not read the message.
+                return Err(SmimeError::RecipientWithoutEncryptionKey { index });
             }
         }
         if chosen.is_empty() {

@@ -7,6 +7,12 @@ pub enum SmimeError {
     KeyExpired,
     UnsupportedAlgorithm(String),
     NoSuitableEncryptionKey,
+    /// Recipient bundle `index` (0-based, in the order given) parsed but has
+    /// no supported encryption entry. Same code as
+    /// [`Self::NoSuitableEncryptionKey`] so older callers still fail closed.
+    RecipientWithoutEncryptionKey {
+        index: usize,
+    },
     NoSuitableSigningKey,
     BadSignature,
     DecryptionFailed,
@@ -22,7 +28,7 @@ impl SmimeError {
             Self::InvalidKey(_) => 2,
             Self::KeyExpired => 3,
             Self::UnsupportedAlgorithm(_) => 5,
-            Self::NoSuitableEncryptionKey => 6,
+            Self::NoSuitableEncryptionKey | Self::RecipientWithoutEncryptionKey { .. } => 6,
             Self::NoSuitableSigningKey => 7,
             Self::BadSignature => 8,
             Self::DecryptionFailed => 9,
@@ -41,6 +47,10 @@ impl fmt::Display for SmimeError {
             Self::KeyExpired => write!(f, "key expired"),
             Self::UnsupportedAlgorithm(m) => write!(f, "unsupported algorithm: {m}"),
             Self::NoSuitableEncryptionKey => write!(f, "no suitable encryption key"),
+            // Callers parse this text: keep the format stable.
+            Self::RecipientWithoutEncryptionKey { index } => {
+                write!(f, "no suitable encryption key for recipient {index}")
+            }
             Self::NoSuitableSigningKey => write!(f, "no suitable signing key"),
             Self::BadSignature => write!(f, "bad signature"),
             Self::DecryptionFailed => write!(f, "decryption failed"),
