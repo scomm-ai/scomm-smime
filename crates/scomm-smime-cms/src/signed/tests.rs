@@ -18,7 +18,7 @@ const DATA: &[u8] = b"Content-Type: text/plain\r\n\r\nsigned body\r\n";
 /// Self-signed certificate for a test ML-DSA entry (task 3.4 makes the real
 /// ones); X509_sign takes no digest for ML-DSA.
 fn mldsa_entry() -> KeyEntry {
-    let mut e = pqc::mldsa_sign_entry(None).unwrap();
+    let mut e = pqc::mldsa_sign_entry(None, None).unwrap();
     let key = pqc::mldsa_pkey(&b64_decode(e.pkcs8_b64.as_ref().unwrap()).unwrap()).unwrap();
     let mut name = X509Name::builder().unwrap();
     name.append_entry_by_text("CN", "mldsa@example.com")
@@ -50,7 +50,7 @@ fn all() -> Vec<(SignAlg, KeyEntry)> {
         (SignAlg::RsaPss, rsa),
         (
             SignAlg::Ed25519,
-            ed25519_sign_entry("ed@example.com").unwrap(),
+            ed25519_sign_entry("ed@example.com", None).unwrap(),
         ),
         (SignAlg::MlDsa65, mldsa_entry()),
     ]
@@ -275,7 +275,7 @@ fn a_valid_s1_signature_reports_validity_apart_from_trust() {
 
 #[test]
 fn the_e_mail_match_uses_the_certificate_address() {
-    let entry = ed25519_sign_entry("Alice <alice@example.com>").unwrap();
+    let entry = ed25519_sign_entry("Alice <alice@example.com>", None).unwrap();
     let sig = sign(DATA, &entry, SignAlg::Ed25519).unwrap();
     let check = |sender| {
         verify_detached(DATA, &sig, None, sender)

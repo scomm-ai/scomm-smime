@@ -143,13 +143,20 @@ impl SmimeProvider for CmsSmime {
         } else {
             options.userid.as_str()
         };
+        let years = options.validity_years;
+        if years.is_some_and(|y| !(MIN_VALIDITY_YEARS..=MAX_VALIDITY_YEARS).contains(&y)) {
+            return Err(SmimeError::InvalidArgument("validity_years".into()));
+        }
         let email = parse_email(userid);
-        let mldsa = || pqc::mldsa_sign_entry(Some(email.as_str()).filter(|e| e.contains('@')));
+        let mldsa =
+            || pqc::mldsa_sign_entry(Some(email.as_str()).filter(|e| e.contains('@')), years);
         let entries = match options.profile {
-            KeyProfile::Classical => vec![x25519_encrypt_entry()?, ed25519_sign_entry(userid)?],
+            KeyProfile::Classical => {
+                vec![x25519_encrypt_entry()?, ed25519_sign_entry(userid, years)?]
+            }
             KeyProfile::PqcCms => vec![
                 x25519_encrypt_entry()?,
-                ed25519_sign_entry(userid)?,
+                ed25519_sign_entry(userid, years)?,
                 pqc::hybrid_encrypt_entry()?,
                 mldsa()?,
             ],

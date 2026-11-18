@@ -102,6 +102,7 @@ pub fn self_signed_rsa(
         });
     });
 
+    let (not_before, not_after) = validity_window(None);
     let tbs = yasna::construct_der(|w| {
         w.write_sequence(|w| {
             w.next().write_tagged(Tag::context(0), |w| {
@@ -114,8 +115,8 @@ pub fn self_signed_rsa(
             });
             w.next().write_der(&cn);
             w.next().write_sequence(|w| {
-                w.next().write_der(&generalized_time("20240101000000Z"));
-                w.next().write_der(&generalized_time("20340101000000Z"));
+                w.next().write_der(&generalized_time(&not_before));
+                w.next().write_der(&generalized_time(&not_after));
             });
             w.next().write_der(&cn);
             w.next().write_der(&spki);
@@ -149,6 +150,47 @@ pub fn self_signed_rsa(
     });
 
     Ok(pem::Pem::new("CERTIFICATE", cert_der).to_string())
+}
+
+/// Average Gregorian year, so 3 years is 3 * 365.2425 days.
+const SECS_PER_YEAR: i64 = 31_556_952;
+
+/// `notBefore`/`notAfter` of a new certificate, as GeneralizedTime text.
+/// `Some(years)` ends that many years from now and starts a day back, so a
+/// recipient whose clock runs behind does not see it as not yet valid.
+/// `None` is the fixed 2024-2034 window builds before ABI 5 wrote. The
+/// caller checks the range.
+pub(crate) fn validity_window(validity_years: Option<u32>) -> (String, String) {
+    let Some(years) = validity_years else {
+        return ("20240101000000Z".into(), "20340101000000Z".into());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    (
+        generalized_time_text(now - 86_400),
+        generalized_time_text(now + i64::from(years) * SECS_PER_YEAR),
+    )
+}
+
+/// `YYYYMMDDHHMMSSZ` for a Unix time (days-to-civil, H. Hinnant).
+pub(crate) fn generalized_time_text(unix: i64) -> String {
+    let (days, secs) = (unix.div_euclid(86_400), unix.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}{:02}{:02}{:02}Z",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    )
 }
 
 fn generalized_time(s: &str) -> Vec<u8> {
@@ -294,7 +336,7 @@ pub fn rsa_sign_entry(userid: &str) -> Result<KeyEntry> {
 
 /// Ed25519 signing key. OpenSSL signs the certificate body directly
 /// (`id-Ed25519`, no digest parameters).
-pub fn ed25519_sign_entry(userid: &str) -> Result<KeyEntry> {
+pub fn ed25519_sign_entry(userid: &str, validity_years: Option<u32>) -> Result<KeyEntry> {
     let key = PKey::generate_ed25519()
         .map_err(|e| SmimeError::Internal(format!("ed25519 generate: {e}")))?;
     let seed = key
@@ -307,7 +349,7 @@ pub fn ed25519_sign_entry(userid: &str) -> Result<KeyEntry> {
         return Err(SmimeError::InvalidKey("ed25519".into()));
     }
     let spki = ed25519_spki(&raw_public);
-    let cert = self_signed_ed25519(userid, &seed, &spki)?;
+    let cert = self_signed_ed25519(userid, &seed, &spki, validity_years)?;
     Ok(KeyEntry {
         alg: ALG_ED25519.to_string(),
         purpose: "signing".into(),
@@ -374,9 +416,15 @@ pub fn ed25519_spki(raw32: &[u8]) -> Vec<u8> {
     out
 }
 
-fn self_signed_ed25519(userid: &str, seed: &[u8], spki: &[u8]) -> Result<String> {
+fn self_signed_ed25519(
+    userid: &str,
+    seed: &[u8],
+    spki: &[u8],
+    validity_years: Option<u32>,
+) -> Result<String> {
     let email = parse_email(userid);
     let (cn, extensions) = subject_and_extensions(&email, true, false)?;
+    let (not_before, not_after) = validity_window(validity_years);
     let sig_alg = oid(&[1, 3, 101, 112]);
     let tbs = yasna::construct_der(|w| {
         w.write_sequence(|w| {
@@ -389,8 +437,8 @@ fn self_signed_ed25519(userid: &str, seed: &[u8], spki: &[u8]) -> Result<String>
             });
             w.next().write_der(&cn);
             w.next().write_sequence(|w| {
-                w.next().write_der(&generalized_time("20240101000000Z"));
-                w.next().write_der(&generalized_time("20340101000000Z"));
+                w.next().write_der(&generalized_time(&not_before));
+                w.next().write_der(&generalized_time(&not_after));
             });
             w.next().write_der(&cn);
             w.next().write_der(spki);

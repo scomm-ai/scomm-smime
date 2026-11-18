@@ -11,6 +11,7 @@ fn gen(profile: KeyProfile) -> GeneratedKey {
             userid: "Alice <alice@example.com>".into(),
             passphrase: None,
             profile,
+            ..Default::default()
         })
         .expect("generate")
 }

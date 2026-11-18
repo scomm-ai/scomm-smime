@@ -243,6 +243,7 @@ fn scomm_to_openssl() {
                 userid: format!("{who} <{who}@example.com>"),
                 passphrase: None,
                 profile,
+                ..Default::default()
             })
             .expect("generate")
     };

@@ -16,7 +16,7 @@ use crate::cert::{ed25519_sign_entry, rsa_sign_entry};
 
 #[test]
 fn scomm_ed25519_certificate() {
-    let e = ed25519_sign_entry("Alice <alice@example.com>").unwrap();
+    let e = ed25519_sign_entry("Alice <alice@example.com>", None).unwrap();
     let i = cert_info(e.cert_pem.as_bytes()).unwrap();
     assert_eq!(i.version, 3);
     assert_eq!(i.public_key_algorithm, "ed25519");

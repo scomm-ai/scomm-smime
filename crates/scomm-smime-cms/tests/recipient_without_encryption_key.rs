@@ -10,6 +10,7 @@ fn gen(profile: KeyProfile, uid: &str) -> GeneratedKey {
             userid: uid.into(),
             passphrase: None,
             profile,
+            ..Default::default()
         })
         .unwrap()
 }

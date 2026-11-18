@@ -731,7 +731,7 @@ fn f1_reader_reports_no_key_and_bad_content_apart() {
 fn f1_writer_refuses_a_recipient_it_cannot_serve() {
     let mut no_cert = rsa_entry().0;
     no_cert.cert_pem.clear();
-    let ed = crate::cert::ed25519_sign_entry("a@example.com").unwrap();
+    let ed = crate::cert::ed25519_sign_entry("a@example.com", None).unwrap();
     for e in [&no_cert, &ed] {
         assert_eq!(
             encrypt_entries(b"x", &[e]).err(),

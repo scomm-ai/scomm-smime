@@ -24,6 +24,17 @@ int32_t scomm_smime_generate(
     uint8_t **secret_out, size_t *secret_len,
     uint8_t **json_out, size_t *json_len);
 
+/* ABI 5. As scomm_smime_generate, valid for validity_years from now (1 to
+ * 10). 0 keeps the engine's previous default lifetime. */
+int32_t scomm_smime_generate_with_validity(
+    const uint8_t *userid, size_t userid_len,
+    const uint8_t *passphrase, size_t passphrase_len,
+    int32_t profile,
+    uint32_t validity_years,
+    uint8_t **public_out, size_t *public_len,
+    uint8_t **secret_out, size_t *secret_len,
+    uint8_t **json_out, size_t *json_len);
+
 int32_t scomm_smime_pqc_ready(void);
 
 int32_t scomm_smime_export_public(

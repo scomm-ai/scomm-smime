@@ -6,7 +6,7 @@ use scomm_smime_core::*;
 
 fn gen(profile: KeyProfile, uid: &str) -> GeneratedKey {
     CmsSmime::new()
-        .generate_key(&GenerateKeyOptions { userid: uid.into(), passphrase: None, profile })
+        .generate_key(&GenerateKeyOptions { userid: uid.into(), passphrase: None, profile, ..Default::default() })
         .unwrap()
 }
 

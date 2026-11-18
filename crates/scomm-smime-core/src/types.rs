@@ -15,7 +15,14 @@ pub struct GenerateKeyOptions {
     pub userid: String,
     pub passphrase: Option<String>,
     pub profile: KeyProfile,
+    /// Certificate lifetime from now, in years ([MIN_VALIDITY_YEARS] to
+    /// [MAX_VALIDITY_YEARS]). `None` keeps the fixed 2024-2034 window.
+    pub validity_years: Option<u32>,
 }
+
+/// Shortest and longest certificate lifetime [GenerateKeyOptions] accepts.
+pub const MIN_VALIDITY_YEARS: u32 = 1;
+pub const MAX_VALIDITY_YEARS: u32 = 10;
 
 impl Default for GenerateKeyOptions {
     fn default() -> Self {
@@ -23,6 +30,7 @@ impl Default for GenerateKeyOptions {
             userid: String::new(),
             passphrase: None,
             profile: KeyProfile::Classical,
+            validity_years: None,
         }
     }
 }

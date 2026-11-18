@@ -65,9 +65,43 @@ fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
 const DATA: &[u8] = b"abi 3 data";
 
 #[test]
-fn abi_is_4_and_every_symbol_is_linked() {
-    assert_eq!(scomm_smime_abi_version(), 4);
+fn abi_is_5_and_every_symbol_is_linked() {
+    assert_eq!(scomm_smime_abi_version(), 5);
     assert_ne!(link_anchor(), 0);
+}
+
+/// ABI 5: the lifetime reaches the certificate; out-of-range years fail.
+#[test]
+fn generate_with_validity_sets_the_certificate_lifetime() {
+    let generate = |years: u32| {
+        let userid = b"Dana <dana@example.com>";
+        let (mut p, mut pl, mut s, mut sl, mut j, mut jl) =
+            (ptr::null_mut(), 0, ptr::null_mut(), 0, ptr::null_mut(), 0);
+        let code = unsafe {
+            scomm_smime_generate_with_validity(
+                userid.as_ptr(),
+                userid.len(),
+                ptr::null(),
+                0,
+                0,
+                years,
+                &mut p,
+                &mut pl,
+                &mut s,
+                &mut sl,
+                &mut j,
+                &mut jl,
+            )
+        };
+        for (ptr, len) in [(p, pl), (s, sl), (j, jl)] {
+            if !ptr.is_null() {
+                unsafe { scomm_smime_buffer_free(ptr, len) };
+            }
+        }
+        code
+    };
+    assert_eq!(generate(3), 0);
+    assert_ne!(generate(11), 0);
 }
 
 /// ABI 4: profiles 2 and 3 give single-entry bundles, and

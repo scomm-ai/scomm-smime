@@ -190,7 +190,11 @@ pub fn hybrid_encrypt_entry() -> Result<KeyEntry> {
 /// profile as the Ed25519 signing certificates: `CN=<email>`, SAN
 /// rfc822Name, critical key usage digitalSignature, valid 2024-01-01 to
 /// 2034-01-01, random 16-byte serial. Seed and public key are unchanged.
-pub(crate) fn mldsa_certificate(entry: &KeyEntry, email: &str) -> Result<String> {
+pub(crate) fn mldsa_certificate(
+    entry: &KeyEntry,
+    email: &str,
+    validity_years: Option<u32>,
+) -> Result<String> {
     use openssl::asn1::{Asn1Integer, Asn1Time};
     use openssl::bn::BigNum;
     use openssl::x509::extension::{KeyUsage, SubjectAlternativeName};
@@ -213,8 +217,9 @@ pub(crate) fn mldsa_certificate(entry: &KeyEntry, email: &str) -> Result<String>
     b.set_subject_name(&name).map_err(|_| failed("subject"))?;
     b.set_issuer_name(&name).map_err(|_| failed("issuer"))?;
     b.set_pubkey(&key).map_err(|_| failed("key"))?;
-    let not_before = Asn1Time::from_str("20240101000000Z").map_err(|_| failed("validity"))?;
-    let not_after = Asn1Time::from_str("20340101000000Z").map_err(|_| failed("validity"))?;
+    let (not_before, not_after) = crate::cert::validity_window(validity_years);
+    let not_before = Asn1Time::from_str(&not_before).map_err(|_| failed("validity"))?;
+    let not_after = Asn1Time::from_str(&not_after).map_err(|_| failed("validity"))?;
     b.set_not_before(&not_before)
         .map_err(|_| failed("validity"))?;
     b.set_not_after(&not_after)
@@ -268,9 +273,9 @@ fn certificate_is_sound(entry: &KeyEntry, email: &str) -> Result<()> {
 }
 
 /// [entry] with a new certificate that passed [certificate_is_sound].
-fn certified(entry: &KeyEntry, email: &str) -> Result<KeyEntry> {
+fn certified(entry: &KeyEntry, email: &str, validity_years: Option<u32>) -> Result<KeyEntry> {
     let mut updated = entry.clone();
-    updated.cert_pem = mldsa_certificate(entry, email)?;
+    updated.cert_pem = mldsa_certificate(entry, email, validity_years)?;
     certificate_is_sound(&updated, email)?;
     Ok(updated)
 }
@@ -295,7 +300,7 @@ pub fn add_mldsa_certificates(secret_bundle: &[u8], email: &str) -> Result<Optio
         if !wants_cert {
             continue;
         }
-        let mut updated = certified(e, &email)?;
+        let mut updated = certified(e, &email, None)?;
         let old_id = crate::cert::fingerprint_of(e.spki_b64.as_bytes());
         if !updated.legacy_key_ids.contains(&old_id) {
             updated.legacy_key_ids.push(old_id);
@@ -312,10 +317,10 @@ pub fn add_mldsa_certificates(secret_bundle: &[u8], email: &str) -> Result<Optio
 /// A new ML-DSA-65 signing entry. With a mailbox address it carries its
 /// certificate from the start (task 5.9), so it has no legacy key ID;
 /// without one the unlock migration adds the certificate later.
-pub fn mldsa_sign_entry(email: Option<&str>) -> Result<KeyEntry> {
+pub fn mldsa_sign_entry(email: Option<&str>, validity_years: Option<u32>) -> Result<KeyEntry> {
     let entry = bare_mldsa_sign_entry()?;
     match email {
-        Some(email) => certified(&entry, email),
+        Some(email) => certified(&entry, email, validity_years),
         None => Ok(entry),
     }
 }

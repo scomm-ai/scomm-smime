@@ -14,4 +14,5 @@ pub use types::*;
 /// 3: verdict, detached signing, certificate info, trust roots, ML-DSA
 /// certificate migration and decrypt with format (task 3.6).
 /// 4: post-quantum-only key profiles (2, 3) and bundle entry removal.
-pub const ABI_VERSION: u32 = 4;
+/// 5: `scomm_smime_generate_with_validity` (certificate lifetime in years).
+pub const ABI_VERSION: u32 = 5;
