@@ -130,4 +130,11 @@ void main() {
     expect(SmimeCertPurpose.signing.wire, 0);
     expect(SmimeCertPurpose.encryption.wire, 1);
   });
+
+  test('key profiles match the C ABI', () {
+    expect(SmimeKeyProfile.classical.wire, 0);
+    expect(SmimeKeyProfile.pqcCms.wire, 1);
+    expect(SmimeKeyProfile.pqcEncryption.wire, 2);
+    expect(SmimeKeyProfile.pqcSigning.wire, 3);
+  });
 }

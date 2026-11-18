@@ -11,6 +11,11 @@ import 'types.dart';
 /// trust roots, ML-DSA migration and decrypt-with-format symbols.
 const int scommSmimeAbiTrust = 3;
 
+/// Lowest native ABI with the post-quantum-only key profiles
+/// ([SmimeKeyProfile.pqcEncryption], [SmimeKeyProfile.pqcSigning]) and
+/// [ScommSmime.removeEntries].
+const int scommSmimeAbiPqcOnly = 4;
+
 typedef _DetailsDecryptN = ffi.Int32 Function(
   ffi.Pointer<ffi.Uint8>,
   ffi.Size,
@@ -461,6 +466,8 @@ class ScommSmime {
   );
   late final _TwoInD _addMldsaCertificates = _lib
       .lookupFunction<_TwoInN, _TwoInD>('scomm_smime_add_mldsa_certificates');
+  late final _TwoInD _removeEntries =
+      _lib.lookupFunction<_TwoInN, _TwoInD>('scomm_smime_remove_entries');
   late final int Function() _maxPlaintextLen =
       _lib.lookupFunction<ffi.Size Function(), int Function()>(
     'scomm_smime_max_plaintext_len',
@@ -641,6 +648,33 @@ class ScommSmime {
     });
   }
 
+  /// [secretKey] without the entries whose `spki_b64` is in [spkis]. Other
+  /// entries are returned unchanged. Throws rather than leave no entry.
+  Uint8List removeEntries({
+    required List<int> secretKey,
+    required List<String> spkis,
+  }) {
+    _requireAbi(scommSmimeAbiPqcOnly);
+    return using((arena) {
+      final sk = _copy(arena, secretKey);
+      final ids = _copy(arena, utf8.encode(jsonEncode(spkis)));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _removeEntries(
+        sk.ptr,
+        sk.len,
+        ids.ptr,
+        ids.len,
+        outPtr,
+        outLen,
+      );
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
   /// Decrypts and reports the format (`f1`, `f0-std`, `f0-scomm`).
   SmimeDecryptResult decryptWithFormat({
     required List<int> ciphertext,
@@ -703,6 +737,10 @@ class ScommSmime {
     String passphrase = '',
     SmimeKeyProfile profile = SmimeKeyProfile.classical,
   }) {
+    if (profile == SmimeKeyProfile.pqcEncryption ||
+        profile == SmimeKeyProfile.pqcSigning) {
+      _requireAbi(scommSmimeAbiPqcOnly);
+    }
     return using((arena) {
       final user = _copy(arena, utf8.encode(userid));
       final pass = _copy(arena, utf8.encode(passphrase));

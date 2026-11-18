@@ -65,9 +65,69 @@ fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
 const DATA: &[u8] = b"abi 3 data";
 
 #[test]
-fn abi_is_3_and_every_symbol_is_linked() {
-    assert_eq!(scomm_smime_abi_version(), 3);
+fn abi_is_4_and_every_symbol_is_linked() {
+    assert_eq!(scomm_smime_abi_version(), 4);
     assert_ne!(link_anchor(), 0);
+}
+
+/// ABI 4: profiles 2 and 3 give single-entry bundles, and
+/// `scomm_smime_remove_entries` drops a named entry through the C ABI.
+#[test]
+fn pqc_only_profiles_and_remove_entries() {
+    let generate = |profile: i32| {
+        let userid = b"Dana <dana@example.com>";
+        let (mut p, mut pl, mut s, mut sl, mut j, mut jl) =
+            (ptr::null_mut(), 0, ptr::null_mut(), 0, ptr::null_mut(), 0);
+        let code = unsafe {
+            scomm_smime_generate(
+                userid.as_ptr(), userid.len(), ptr::null(), 0, profile,
+                &mut p, &mut pl, &mut s, &mut sl, &mut j, &mut jl,
+            )
+        };
+        assert_eq!(code, 0, "profile {profile}");
+        let secret = unsafe { std::slice::from_raw_parts(s, sl) }.to_vec();
+        unsafe {
+            scomm_smime_buffer_free(p, pl);
+            scomm_smime_buffer_free(s, sl);
+            scomm_smime_buffer_free(j, jl);
+        }
+        secret
+    };
+    let algs = |bundle: &[u8]| -> Vec<String> {
+        json(bundle)["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["alg"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(algs(&generate(2)), vec!["smime-mlkem768-x25519"]);
+    assert_eq!(algs(&generate(3)), vec!["pqc-mldsa65"]);
+
+    let (_, legacy) = pqc_key();
+    let spki = json(&legacy)["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["alg"] == "smime-mlkem768-x25519")
+        .unwrap()["spki_b64"]
+        .clone();
+    let spkis = serde_json::to_vec(&vec![spki]).unwrap();
+    let (code, trimmed) = take(|o, l| unsafe {
+        scomm_smime_remove_entries(
+            legacy.as_ptr(), legacy.len(), spkis.as_ptr(), spkis.len(), o, l,
+        )
+    });
+    assert_eq!(code, 0);
+    assert_eq!(
+        algs(&trimmed),
+        vec!["smime-x25519", "smime-ed25519", "pqc-mldsa65"]
+    );
+
+    let (code, _) = take(|o, l| unsafe {
+        scomm_smime_remove_entries(legacy.as_ptr(), legacy.len(), b"not json".as_ptr(), 8, o, l)
+    });
+    assert_ne!(code, 0, "a bad spki list is refused");
 }
 
 #[test]

@@ -13,4 +13,5 @@ pub use types::*;
 /// FFI / Dart ABI version. Bump when the C ABI breaks.
 /// 3: verdict, detached signing, certificate info, trust roots, ML-DSA
 /// certificate migration and decrypt with format (task 3.6).
-pub const ABI_VERSION: u32 = 3;
+/// 4: post-quantum-only key profiles (2, 3) and bundle entry removal.
+pub const ABI_VERSION: u32 = 4;

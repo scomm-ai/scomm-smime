@@ -4,6 +4,10 @@ pub enum KeyProfile {
     Classical,
     /// Classical dual-publish plus `smime-mlkem768-x25519` encrypt and `pqc-mldsa65` sign.
     PqcCms,
+    /// Only `smime-mlkem768-x25519` encrypt (ABI 4). No classical entries.
+    PqcEncryption,
+    /// Only `pqc-mldsa65` sign with its certificate (ABI 4). No classical entries.
+    PqcSigning,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

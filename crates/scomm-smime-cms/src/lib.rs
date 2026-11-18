@@ -36,6 +36,15 @@ use signed::SignAlg;
 /// exercised by tests. RSA PKCS#1 v1.5 is S1 in both releases.
 pub const RELEASE_2_WRITERS: bool = true;
 
+/// Removes the entries named by their `spki_b64` from a secret bundle and
+/// returns the rest unchanged (ABI 4). Used to drop copies another record
+/// owns from a legacy combined bundle. Errors when nothing would remain.
+pub fn remove_entries(secret_bundle: &[u8], spkis: &[String]) -> Result<Vec<u8>> {
+    KeyBundle::parse(secret_bundle)?
+        .without_entries(spkis)?
+        .to_secret_json()
+}
+
 #[derive(Default)]
 pub struct DecryptEnvelope {
     pub format: Option<&'static str>,
@@ -134,17 +143,19 @@ impl SmimeProvider for CmsSmime {
         } else {
             options.userid.as_str()
         };
-        let mut entries = vec![
-            x25519_encrypt_entry()?,
-            ed25519_sign_entry(userid)?,
-        ];
-        if options.profile == KeyProfile::PqcCms {
-            entries.push(pqc::hybrid_encrypt_entry()?);
-            let email = parse_email(userid);
-            entries.push(pqc::mldsa_sign_entry(
-                Some(email.as_str()).filter(|e| e.contains('@')),
-            )?);
-        }
+        let email = parse_email(userid);
+        let mldsa = || pqc::mldsa_sign_entry(Some(email.as_str()).filter(|e| e.contains('@')));
+        let entries = match options.profile {
+            KeyProfile::Classical => vec![x25519_encrypt_entry()?, ed25519_sign_entry(userid)?],
+            KeyProfile::PqcCms => vec![
+                x25519_encrypt_entry()?,
+                ed25519_sign_entry(userid)?,
+                pqc::hybrid_encrypt_entry()?,
+                mldsa()?,
+            ],
+            KeyProfile::PqcEncryption => vec![pqc::hybrid_encrypt_entry()?],
+            KeyProfile::PqcSigning => vec![mldsa()?],
+        };
         let bundle = KeyBundle { v: 1, entries };
         let public = bundle.to_public_json()?;
         let secret = bundle.to_secret_json()?;

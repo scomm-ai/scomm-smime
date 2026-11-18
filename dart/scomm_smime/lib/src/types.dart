@@ -102,7 +102,13 @@ class GeneratedSmimeKey {
 /// Matches C ABI `profile` on `scomm_smime_generate`.
 enum SmimeKeyProfile {
   classical(0),
-  pqcCms(1);
+  pqcCms(1),
+
+  /// ABI 4: only the `smime-mlkem768-x25519` encryption entry.
+  pqcEncryption(2),
+
+  /// ABI 4: only the `pqc-mldsa65` signing entry, with its certificate.
+  pqcSigning(3);
 
   const SmimeKeyProfile(this.wire);
   final int wire;

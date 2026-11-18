@@ -6,8 +6,8 @@ use std::ptr;
 use std::slice;
 
 use scomm_smime_cms::{
-    add_mldsa_certificates, cert_info, check_certificate, set_trust_roots, CmsSmime,
-    DecryptEnvelope, MAX_PLAINTEXT_LEN,
+    add_mldsa_certificates, cert_info, check_certificate, remove_entries, set_trust_roots,
+    CmsSmime, DecryptEnvelope, MAX_PLAINTEXT_LEN,
 };
 use scomm_smime_core::*;
 use serde_json::json;
@@ -228,6 +228,8 @@ pub unsafe extern "C" fn scomm_smime_generate(
     let profile = match profile {
         0 => KeyProfile::Classical,
         1 => KeyProfile::PqcCms,
+        2 => KeyProfile::PqcEncryption,
+        3 => KeyProfile::PqcSigning,
         _ => {
             set_error("unknown key profile".into());
             return SmimeError::InvalidArgument("profile".into()).code();
@@ -696,6 +698,31 @@ pub unsafe extern "C" fn scomm_smime_add_mldsa_certificates(
     })
 }
 
+/// ABI 4. Writes [secret] without the entries whose `spki_b64` is listed in
+/// [spkis], a JSON array of strings. Fails rather than leave no entry.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_remove_entries(
+    secret: *const u8,
+    secret_len: usize,
+    spkis: *const u8,
+    spkis_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let secret = read_slice(secret, secret_len).to_vec();
+    let spkis = read_slice(spkis, spkis_len).to_vec();
+    *out = ptr::null_mut();
+    *out_len = 0;
+    run(|| {
+        clear_error();
+        let spkis: Vec<String> = serde_json::from_slice(&spkis)
+            .map_err(|_| SmimeError::InvalidArgument("spkis must be a JSON string array".into()))?;
+        let updated = remove_entries(&secret, &spkis)?;
+        unsafe { write_buf(&updated, out, out_len) };
+        Ok(0)
+    })
+}
+
 /// [scomm_smime_decrypt] plus JSON `{format, algorithm}` (D6): the app
 /// shows anything other than `f1` as not integrity protected.
 #[no_mangle]
@@ -950,7 +977,7 @@ pub extern "C" fn scomm_smime_max_plaintext_len() -> usize {
 /// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
 /// in the one client library.
 pub fn link_anchor() -> usize {
-    let exports: [*const (); 27] = [
+    let exports: [*const (); 28] = [
         scomm_smime_buffer_free as *const (),
         scomm_smime_last_error as *const (),
         scomm_smime_inspect as *const (),
@@ -978,6 +1005,7 @@ pub fn link_anchor() -> usize {
         scomm_smime_inspect_public_envelope_v1 as *const (),
         scomm_smime_verify_detached_with_details_v1 as *const (),
         scomm_smime_max_plaintext_len as *const (),
+        scomm_smime_remove_entries as *const (),
     ];
     exports
         .iter()

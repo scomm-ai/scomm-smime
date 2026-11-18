@@ -76,6 +76,23 @@ impl KeyBundle {
         Err(SmimeError::InvalidKey("not an S/MIME key bundle".into()))
     }
 
+    /// The bundle without the entries whose `spki_b64` is in [spkis]. Other
+    /// entries are kept unchanged. Refuses to remove every entry.
+    pub fn without_entries(&self, spkis: &[String]) -> Result<Self> {
+        let entries: Vec<KeyEntry> = self
+            .entries
+            .iter()
+            .filter(|e| !spkis.contains(&e.spki_b64))
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            return Err(SmimeError::InvalidArgument(
+                "removing every entry would leave an empty bundle".into(),
+            ));
+        }
+        Ok(KeyBundle { v: self.v, entries })
+    }
+
     pub fn encryption_entries(&self) -> impl Iterator<Item = &KeyEntry> {
         self.entries.iter().filter(|e| e.purpose == "encryption")
     }

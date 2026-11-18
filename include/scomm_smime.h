@@ -99,6 +99,15 @@ int32_t scomm_smime_add_mldsa_certificates(
     const uint8_t *email, size_t email_len,
     uint8_t **out, size_t *out_len);
 
+/* ABI 4. Writes the secret bundle without the entries whose spki_b64 is in
+ * spkis (a JSON array of strings). Fails rather than leave no entry.
+ * scomm_smime_generate profile: 0 classical, 1 PQC CMS (classical + PQC),
+ * 2 PQC encryption only, 3 PQC signing only. */
+int32_t scomm_smime_remove_entries(
+    const uint8_t *secret, size_t secret_len,
+    const uint8_t *spkis, size_t spkis_len,
+    uint8_t **out, size_t *out_len);
+
 /* ABI 3. Largest plaintext scomm_smime_encrypt accepts; anything written
  * within it can be read back. */
 size_t scomm_smime_max_plaintext_len(void);
