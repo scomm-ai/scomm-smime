@@ -137,4 +137,24 @@ void main() {
     expect(SmimeKeyProfile.pqcEncryption.wire, 2);
     expect(SmimeKeyProfile.pqcSigning.wire, 3);
   });
+
+  test('import result (ABI 6) keeps personal and CA certificates apart', () {
+    final r = SmimeImportResult.fromJson({
+      'certificates': [
+        {
+          'cert_pem': 'leaf',
+          'spki_b64': 'AA==',
+          'is_ca': false,
+          'key_algorithm': 'rsa',
+          'pkcs8_b64': 'BB==',
+        },
+        {'cert_pem': 'root', 'spki_b64': 'CC==', 'is_ca': true, 'key_algorithm': 'rsa'},
+      ],
+      'unmatched_keys': 1,
+    });
+    expect(r.unmatchedKeys, 1);
+    expect(r.certificates.first.hasPrivateKey, isTrue);
+    expect(r.certificates.last.isCa, isTrue);
+    expect(r.certificates.last.hasPrivateKey, isFalse);
+  });
 }

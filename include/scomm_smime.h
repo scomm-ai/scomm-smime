@@ -35,6 +35,15 @@ int32_t scomm_smime_generate_with_validity(
     uint8_t **secret_out, size_t *secret_len,
     uint8_t **json_out, size_t *json_len);
 
+/* ABI 6: S/MIME import files (PKCS#12, PKCS#7, PEM/DER certificates and
+ * keys). files: u32 count, then u32 length + bytes per file (big-endian).
+ * json_out: {certificates:[{cert_pem,spki_b64,is_ca,key_algorithm,
+ * pkcs8_b64?}],unmatched_keys}. 12: password required, 13: wrong password. */
+int32_t scomm_smime_import(
+    const uint8_t *files, size_t files_len,
+    const uint8_t *password, size_t password_len,
+    uint8_t **json_out, size_t *json_len);
+
 int32_t scomm_smime_pqc_ready(void);
 
 int32_t scomm_smime_export_public(

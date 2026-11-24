@@ -65,8 +65,8 @@ fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
 const DATA: &[u8] = b"abi 3 data";
 
 #[test]
-fn abi_is_5_and_every_symbol_is_linked() {
-    assert_eq!(scomm_smime_abi_version(), 5);
+fn abi_is_6_and_every_symbol_is_linked() {
+    assert_eq!(scomm_smime_abi_version(), 6);
     assert_ne!(link_anchor(), 0);
 }
 
@@ -539,4 +539,52 @@ fn the_plaintext_limit_is_the_engine_limit() {
         scomm_smime_max_plaintext_len(),
         scomm_smime_cms::MAX_PLAINTEXT_LEN
     );
+}
+
+fn files_buffer(files: &[&[u8]]) -> Vec<u8> {
+    let mut out = (files.len() as u32).to_be_bytes().to_vec();
+    for f in files {
+        out.extend((f.len() as u32).to_be_bytes());
+        out.extend(*f);
+    }
+    out
+}
+
+/// ABI 6: `scomm_smime_import` returns the certificates as JSON and the
+/// password errors as their own codes.
+#[test]
+fn import_reads_files_and_reports_password_errors() {
+    let (public, _) = pqc_key();
+    let bundle = json(&public);
+    let pem = bundle["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|e| e["cert_pem"].as_str().filter(|p| !p.is_empty()))
+        .unwrap()
+        .to_string();
+    let files = files_buffer(&[pem.as_bytes()]);
+    let (code, out) = take(|o, l| unsafe {
+        scomm_smime_import(files.as_ptr(), files.len(), ptr::null(), 0, o, l)
+    });
+    assert_eq!(code, 0);
+    let v = json(&out);
+    assert_eq!(v["certificates"].as_array().unwrap().len(), 1);
+    assert_eq!(v["unmatched_keys"], 0);
+    assert!(v["certificates"][0].get("pkcs8_b64").is_none());
+
+    // An encrypted PKCS#8 key with no password: code 12; wrong one: 13.
+    let key = openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+    let enc = key
+        .private_key_to_pem_pkcs8_passphrase(openssl::symm::Cipher::aes_128_cbc(), b"pw")
+        .unwrap();
+    let files = files_buffer(&[pem.as_bytes(), &enc]);
+    let (code, _) = take(|o, l| unsafe {
+        scomm_smime_import(files.as_ptr(), files.len(), ptr::null(), 0, o, l)
+    });
+    assert_eq!(code, 12);
+    let (code, _) = take(|o, l| unsafe {
+        scomm_smime_import(files.as_ptr(), files.len(), b"no".as_ptr(), 2, o, l)
+    });
+    assert_eq!(code, 13);
 }

@@ -15,4 +15,6 @@ pub use types::*;
 /// certificate migration and decrypt with format (task 3.6).
 /// 4: post-quantum-only key profiles (2, 3) and bundle entry removal.
 /// 5: `scomm_smime_generate_with_validity` (certificate lifetime in years).
-pub const ABI_VERSION: u32 = 5;
+/// 6: `scomm_smime_import` (PKCS#12, PKCS#7, PEM/DER certificates and keys)
+/// and error codes 12 (password required) and 13 (wrong password).
+pub const ABI_VERSION: u32 = 6;

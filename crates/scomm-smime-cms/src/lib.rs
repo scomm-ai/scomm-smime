@@ -2,6 +2,7 @@ mod bundle;
 mod cert;
 mod certinfo;
 mod classify;
+mod import;
 mod cms_envelop;
 mod kekri;
 mod legacy;
@@ -12,6 +13,7 @@ mod signed;
 mod trust;
 
 pub use certinfo::{cert_info, CertInfo};
+pub use import::{import, ImportResult, ImportedCertificate, MAX_IMPORT_FILE_LEN};
 pub use classify::{inspect_public_envelope, MAX_MESSAGE_LEN, MAX_PLAINTEXT_LEN};
 pub use pqc::add_mldsa_certificates;
 pub use trust::{check_certificate, set_trust_roots};

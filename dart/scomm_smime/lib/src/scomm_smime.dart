@@ -16,6 +16,15 @@ const int scommSmimeAbiTrust = 3;
 /// [ScommSmime.removeEntries].
 const int scommSmimeAbiPqcOnly = 4;
 
+/// Lowest native ABI with [ScommSmime.importFiles].
+const int scommSmimeAbiImport = 6;
+
+/// [ScommSmimeException.code] for an import file that needs a password.
+const int scommSmimePasswordRequired = 12;
+
+/// [ScommSmimeException.code] for a password that did not open the file.
+const int scommSmimeWrongPassword = 13;
+
 typedef _DetailsDecryptN = ffi.Int32 Function(
   ffi.Pointer<ffi.Uint8>,
   ffi.Size,
@@ -700,6 +709,38 @@ class ScommSmime {
         throw ScommSmimeException(code, _readLastError());
       }
       return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  late final _TwoInD _import =
+      _lib.lookupFunction<_TwoInN, _TwoInD>('scomm_smime_import');
+
+  /// Reads S/MIME import files with OpenSSL (ABI 6): PKCS#12, PKCS#7 (PEM
+  /// or DER, also with the whole PEM block on one line), PEM and DER
+  /// certificates, PKCS#8 / PKCS#1 / SEC1 keys, encrypted PKCS#8 and
+  /// `Proc-Type: 4,ENCRYPTED` keys. Each element of [files] is one file.
+  ///
+  /// Throws [ScommSmimeException] with [scommSmimePasswordRequired] or
+  /// [scommSmimeWrongPassword] for password problems. The result holds
+  /// unencrypted private keys: store them at once, never log them.
+  SmimeImportResult importFiles({
+    required List<List<int>> files,
+    String password = '',
+  }) {
+    _requireAbi(scommSmimeAbiImport);
+    return using((arena) {
+      final f = _copy(arena, _encodeRecipients(files));
+      final pass = _copy(arena, utf8.encode(password));
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _import(f.ptr, f.len, pass.ptr, pass.len, outPtr, outLen);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return SmimeImportResult.fromJson(
+        jsonDecode(utf8.decode(_take(outPtr.value, outLen.value)))
+            as Map<String, dynamic>,
+      );
     });
   }
 

@@ -338,3 +338,59 @@ class CompositePopSignatures {
   final Uint8List mldsa;
   final Uint8List ed25519;
 }
+
+/// One certificate from [ScommSmime.importFiles].
+class SmimeImportedCertificate {
+  const SmimeImportedCertificate({
+    required this.certPem,
+    required this.spkiB64,
+    required this.isCa,
+    required this.keyAlgorithm,
+    this.pkcs8B64,
+  });
+
+  final String certPem;
+  final String spkiB64;
+
+  /// basicConstraints cA (or keyCertSign). Never trusted because of this.
+  final bool isCa;
+
+  /// `rsa`, `ec`, `ed25519`, `ed448`, `dsa` or `other`.
+  final String keyAlgorithm;
+
+  /// The matching private key, unencrypted PKCS#8 DER in Base64.
+  final String? pkcs8B64;
+
+  bool get hasPrivateKey => pkcs8B64 != null;
+
+  factory SmimeImportedCertificate.fromJson(Map<String, dynamic> json) {
+    return SmimeImportedCertificate(
+      certPem: json['cert_pem'] as String? ?? '',
+      spkiB64: json['spki_b64'] as String? ?? '',
+      isCa: json['is_ca'] as bool? ?? false,
+      keyAlgorithm: json['key_algorithm'] as String? ?? 'other',
+      pkcs8B64: json['pkcs8_b64'] as String?,
+    );
+  }
+}
+
+/// [ScommSmime.importFiles] result: personal certificates first.
+class SmimeImportResult {
+  const SmimeImportResult({required this.certificates, required this.unmatchedKeys});
+
+  final List<SmimeImportedCertificate> certificates;
+
+  /// Private keys that belong to none of the certificates.
+  final int unmatchedKeys;
+
+  factory SmimeImportResult.fromJson(Map<String, dynamic> json) {
+    return SmimeImportResult(
+      certificates: [
+        for (final raw in json['certificates'] as List? ?? const [])
+          if (raw is Map)
+            SmimeImportedCertificate.fromJson(Map<String, dynamic>.from(raw)),
+      ],
+      unmatchedKeys: (json['unmatched_keys'] as num?)?.toInt() ?? 0,
+    );
+  }
+}

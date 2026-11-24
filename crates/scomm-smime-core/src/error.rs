@@ -18,6 +18,10 @@ pub enum SmimeError {
     DecryptionFailed,
     WrongPrivateKey,
     MalformedMessage,
+    /// An import file is password protected and no password was given (ABI 6).
+    PasswordRequired,
+    /// The password did not open an import file (ABI 6).
+    WrongPassword,
     Internal(String),
 }
 
@@ -34,6 +38,8 @@ impl SmimeError {
             Self::DecryptionFailed => 9,
             Self::WrongPrivateKey => 10,
             Self::MalformedMessage => 11,
+            Self::PasswordRequired => 12,
+            Self::WrongPassword => 13,
             Self::Internal(_) => 99,
         }
     }
@@ -56,6 +62,8 @@ impl fmt::Display for SmimeError {
             Self::DecryptionFailed => write!(f, "decryption failed"),
             Self::WrongPrivateKey => write!(f, "wrong private key"),
             Self::MalformedMessage => write!(f, "malformed message"),
+            Self::PasswordRequired => write!(f, "password required"),
+            Self::WrongPassword => write!(f, "wrong password"),
             Self::Internal(m) => write!(f, "internal error: {m}"),
         }
     }
