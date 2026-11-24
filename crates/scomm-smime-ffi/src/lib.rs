@@ -6,7 +6,7 @@ use std::ptr;
 use std::slice;
 
 use scomm_smime_cms::{
-    add_mldsa_certificates, cert_info, check_certificate, import, remove_entries,
+    add_mldsa_certificates, cert_info, check_certificate, create_csr, import, remove_entries,
     set_trust_roots, CmsSmime, DecryptEnvelope, MAX_PLAINTEXT_LEN,
 };
 use scomm_smime_core::*;
@@ -791,6 +791,34 @@ pub unsafe extern "C" fn scomm_smime_import(
     })
 }
 
+/// ABI 7. A PKCS#10 request for a CA-issued S/MIME certificate with a new
+/// RSA key. [request] is JSON `{email, name?, key_bits, sign, encrypt}`
+/// (`key_bits` 2048 or 3072). Writes JSON `{csr_pem, pkcs8_b64, spki_b64,
+/// spki_sha256}`; the request's self-signature is checked first. The output
+/// holds the unencrypted private key: callers store it at once and must not
+/// log it. Errors: 1 bad request, 5 unsupported key size.
+#[no_mangle]
+pub unsafe extern "C" fn scomm_smime_create_csr(
+    request: *const u8,
+    request_len: usize,
+    json_out: *mut *mut u8,
+    json_len: *mut usize,
+) -> i32 {
+    let request = read_slice(request, request_len).to_vec();
+    *json_out = ptr::null_mut();
+    *json_len = 0;
+    run(|| {
+        clear_error();
+        let request = serde_json::from_slice(&request)
+            .map_err(|_| SmimeError::InvalidArgument("csr request JSON".into()))?;
+        let result = create_csr(&request)?;
+        let text =
+            serde_json::to_string(&result).map_err(|e| SmimeError::Internal(e.to_string()))?;
+        unsafe { write_buf(text.as_bytes(), json_out, json_len) };
+        Ok(0)
+    })
+}
+
 /// [scomm_smime_decrypt] plus JSON `{format, algorithm}` (D6): the app
 /// shows anything other than `f1` as not integrity protected.
 #[no_mangle]
@@ -1045,7 +1073,7 @@ pub extern "C" fn scomm_smime_max_plaintext_len() -> usize {
 /// Referenced by `libscomm_openpgp` so the linker keeps these CMS exports
 /// in the one client library.
 pub fn link_anchor() -> usize {
-    let exports: [*const (); 30] = [
+    let exports: [*const (); 31] = [
         scomm_smime_buffer_free as *const (),
         scomm_smime_last_error as *const (),
         scomm_smime_inspect as *const (),
@@ -1076,6 +1104,7 @@ pub fn link_anchor() -> usize {
         scomm_smime_remove_entries as *const (),
         scomm_smime_generate_with_validity as *const (),
         scomm_smime_import as *const (),
+        scomm_smime_create_csr as *const (),
     ];
     exports
         .iter()

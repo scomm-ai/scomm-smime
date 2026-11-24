@@ -339,6 +339,33 @@ class CompositePopSignatures {
   final Uint8List ed25519;
 }
 
+/// [ScommSmime.createCsr] result.
+class SmimeCsr {
+  const SmimeCsr({
+    required this.csrPem,
+    required this.pkcs8B64,
+    required this.spkiB64,
+    required this.spkiSha256,
+  });
+
+  /// `-----BEGIN CERTIFICATE REQUEST-----`; holds no private key.
+  final String csrPem;
+
+  /// The new private key, unencrypted PKCS#8 DER in Base64.
+  final String pkcs8B64;
+  final String spkiB64;
+
+  /// SHA-256 of the public key (SubjectPublicKeyInfo), upper-case hex.
+  final String spkiSha256;
+
+  factory SmimeCsr.fromJson(Map<String, dynamic> json) => SmimeCsr(
+    csrPem: json['csr_pem'] as String,
+    pkcs8B64: json['pkcs8_b64'] as String,
+    spkiB64: json['spki_b64'] as String,
+    spkiSha256: json['spki_sha256'] as String,
+  );
+}
+
 /// One certificate from [ScommSmime.importFiles].
 class SmimeImportedCertificate {
   const SmimeImportedCertificate({

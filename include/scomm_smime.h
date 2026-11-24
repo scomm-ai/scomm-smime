@@ -44,6 +44,13 @@ int32_t scomm_smime_import(
     const uint8_t *password, size_t password_len,
     uint8_t **json_out, size_t *json_len);
 
+/* ABI 7: PKCS#10 request with a new RSA key for a CA-issued S/MIME
+ * certificate. request: JSON {email, name?, key_bits (2048|3072), sign,
+ * encrypt}. json_out: {csr_pem, pkcs8_b64, spki_b64, spki_sha256}. */
+int32_t scomm_smime_create_csr(
+    const uint8_t *request, size_t request_len,
+    uint8_t **json_out, size_t *json_len);
+
 int32_t scomm_smime_pqc_ready(void);
 
 int32_t scomm_smime_export_public(

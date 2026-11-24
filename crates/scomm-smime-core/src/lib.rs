@@ -17,4 +17,5 @@ pub use types::*;
 /// 5: `scomm_smime_generate_with_validity` (certificate lifetime in years).
 /// 6: `scomm_smime_import` (PKCS#12, PKCS#7, PEM/DER certificates and keys)
 /// and error codes 12 (password required) and 13 (wrong password).
-pub const ABI_VERSION: u32 = 6;
+/// 7: `scomm_smime_create_csr` (PKCS#10 request for a CA certificate).
+pub const ABI_VERSION: u32 = 7;

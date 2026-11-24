@@ -2,6 +2,7 @@ mod bundle;
 mod cert;
 mod certinfo;
 mod classify;
+mod csr;
 mod import;
 mod cms_envelop;
 mod kekri;
@@ -13,6 +14,7 @@ mod signed;
 mod trust;
 
 pub use certinfo::{cert_info, CertInfo};
+pub use csr::{create_csr, CsrRequest, CsrResult, CSR_KEY_BITS};
 pub use import::{import, ImportResult, ImportedCertificate, MAX_IMPORT_FILE_LEN};
 pub use classify::{inspect_public_envelope, MAX_MESSAGE_LEN, MAX_PLAINTEXT_LEN};
 pub use pqc::add_mldsa_certificates;

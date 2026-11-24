@@ -19,6 +19,12 @@ const int scommSmimeAbiPqcOnly = 4;
 /// Lowest native ABI with [ScommSmime.importFiles].
 const int scommSmimeAbiImport = 6;
 
+/// Lowest native ABI with [ScommSmime.createCsr].
+const int scommSmimeAbiCsr = 7;
+
+/// RSA sizes [ScommSmime.createCsr] accepts.
+const List<int> scommSmimeCsrKeyBits = [2048, 3072];
+
 /// [ScommSmimeException.code] for an import file that needs a password.
 const int scommSmimePasswordRequired = 12;
 
@@ -709,6 +715,51 @@ class ScommSmime {
         throw ScommSmimeException(code, _readLastError());
       }
       return Uint8List.fromList(_take(outPtr.value, outLen.value));
+    });
+  }
+
+  late final _InspectD _createCsr =
+      _lib.lookupFunction<_InspectN, _InspectD>('scomm_smime_create_csr');
+
+  /// A PKCS#10 request for a CA-issued S/MIME certificate, with a new RSA
+  /// key of [keyBits] (see [scommSmimeCsrKeyBits]) generated natively (ABI
+  /// 7). [name] puts a person's name in the subject (individual validated);
+  /// without it the subject names [email] only (mailbox validated). The
+  /// request carries [email] as its subject alternative name, the key usages
+  /// for [sign] and [encrypt], and e-mail protection; its signature is
+  /// checked before it is returned. The result holds the unencrypted private
+  /// key: store it at once, never log it.
+  SmimeCsr createCsr({
+    required String email,
+    String? name,
+    required int keyBits,
+    required bool sign,
+    required bool encrypt,
+  }) {
+    _requireAbi(scommSmimeAbiCsr);
+    return using((arena) {
+      final req = _copy(
+        arena,
+        utf8.encode(
+          jsonEncode({
+            'email': email,
+            if (name != null) 'name': name,
+            'key_bits': keyBits,
+            'sign': sign,
+            'encrypt': encrypt,
+          }),
+        ),
+      );
+      final outPtr = arena<ffi.Pointer<ffi.Uint8>>();
+      final outLen = arena<ffi.Size>();
+      final code = _createCsr(req.ptr, req.len, outPtr, outLen);
+      if (code != 0) {
+        throw ScommSmimeException(code, _readLastError());
+      }
+      return SmimeCsr.fromJson(
+        jsonDecode(utf8.decode(_take(outPtr.value, outLen.value)))
+            as Map<String, dynamic>,
+      );
     });
   }
 

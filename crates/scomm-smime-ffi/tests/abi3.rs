@@ -65,8 +65,8 @@ fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
 const DATA: &[u8] = b"abi 3 data";
 
 #[test]
-fn abi_is_6_and_every_symbol_is_linked() {
-    assert_eq!(scomm_smime_abi_version(), 6);
+fn abi_is_7_and_every_symbol_is_linked() {
+    assert_eq!(scomm_smime_abi_version(), 7);
     assert_ne!(link_anchor(), 0);
 }
 
@@ -587,4 +587,25 @@ fn import_reads_files_and_reports_password_errors() {
         scomm_smime_import(files.as_ptr(), files.len(), b"no".as_ptr(), 2, o, l)
     });
     assert_eq!(code, 13);
+}
+
+/// ABI 7: `scomm_smime_create_csr` returns a PEM request and its key; bad
+/// requests and unsupported key sizes fail with their codes.
+#[test]
+fn create_csr_returns_a_request_and_its_key() {
+    let req = br#"{"email":"erin@example.com","name":"Erin","key_bits":2048,"sign":true,"encrypt":true}"#;
+    let (code, out) = take(|o, l| unsafe { scomm_smime_create_csr(req.as_ptr(), req.len(), o, l) });
+    assert_eq!(code, 0);
+    let v = json(&out);
+    let pem = v["csr_pem"].as_str().unwrap();
+    assert!(pem.starts_with("-----BEGIN CERTIFICATE REQUEST-----"));
+    assert!(!pem.contains("PRIVATE"));
+    assert!(!v["pkcs8_b64"].as_str().unwrap().is_empty());
+    assert_eq!(v["spki_sha256"].as_str().unwrap().len(), 64);
+
+    let bad = br#"{"email":"erin@example.com","key_bits":1024,"sign":true,"encrypt":false}"#;
+    let (code, _) = take(|o, l| unsafe { scomm_smime_create_csr(bad.as_ptr(), bad.len(), o, l) });
+    assert_eq!(code, 5);
+    let (code, _) = take(|o, l| unsafe { scomm_smime_create_csr(b"{".as_ptr(), 1, o, l) });
+    assert_eq!(code, 1);
 }
