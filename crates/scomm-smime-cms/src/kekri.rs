@@ -84,6 +84,7 @@ extern "C" {
         recip: *mut ffi::X509,
         flags: c_uint,
     ) -> *mut c_void;
+    fn EVP_PKEY_CTX_set_ecdh_kdf_md(ctx: *mut ffi::EVP_PKEY_CTX, md: *const ffi::EVP_MD) -> c_int;
     fn CMS_RecipientInfo_get0_pkey_ctx(ri: *mut c_void) -> *mut ffi::EVP_PKEY_CTX;
     fn EVP_PKEY_CTX_set_rsa_padding(ctx: *mut ffi::EVP_PKEY_CTX, pad: c_int) -> c_int;
     fn EVP_PKEY_CTX_set_rsa_oaep_md(ctx: *mut ffi::EVP_PKEY_CTX, md: *const ffi::EVP_MD) -> c_int;
@@ -550,16 +551,26 @@ fn add_recipient(cms: &CmsContentInfo, r: &Recipient) -> Result<Written> {
     })
 }
 
-/// RSA KeyTransRecipientInfo with RSAES-OAEP, SHA-256 and MGF1-SHA-256,
-/// empty label (`design.md` "Content encryption").
-unsafe fn add_rsa_recipient(cms: &CmsContentInfo, cert: &X509) -> Result<()> {
+/// RSA-OAEP-SHA256 key transport, or RFC 5753 ECDH key agreement with
+/// curve-matched SHA-256/384/512 and AES-256 key wrap.
+unsafe fn add_certificate_recipient(cms: &CmsContentInfo, cert: &X509) -> Result<()> {
     let ri = CMS_add1_recipient_cert(cms.as_ptr(), cert.as_ptr(), CMS_KEY_PARAM);
     if ri.is_null() {
         return Err(ossl_failed(SmimeError::InvalidKey(
-            "RSA certificate".into(),
+            "recipient certificate".into(),
         )));
     }
     let ctx = CMS_RecipientInfo_get0_pkey_ctx(ri);
+    let key = cert.public_key().map_err(|_| {
+        ossl_failed(SmimeError::InvalidKey("certificate public key".into()))
+    })?;
+    if key.id() == Id::EC {
+        let curve = crate::ec::Curve::from_key(&key)?;
+        if ctx.is_null() || EVP_PKEY_CTX_set_ecdh_kdf_md(ctx, curve.digest().as_ptr()) <= 0 {
+            return Err(ossl_failed(SmimeError::Internal("ECDH recipient".into())));
+        }
+        return Ok(());
+    }
     if ctx.is_null()
         || EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0
         || EVP_PKEY_CTX_set_rsa_oaep_md(ctx, ffi::EVP_sha256()) <= 0
@@ -571,7 +582,7 @@ unsafe fn add_rsa_recipient(cms: &CmsContentInfo, cert: &X509) -> Result<()> {
 }
 
 /// AuthEnvelopedData (AES-256-GCM) with one KEKRecipientInfo per Scomm KEM
-/// recipient and one KeyTransRecipientInfo per RSA certificate.
+/// recipient and OpenSSL KeyTrans/KeyAgreeRecipientInfo per RSA/EC certificate.
 pub(crate) fn encrypt(
     plaintext: &[u8],
     recipients: &[Recipient],
@@ -597,7 +608,7 @@ pub(crate) fn encrypt(
             .map(|r| add_recipient(&cms, r))
             .collect::<Result<Vec<_>>>()?;
         for cert in rsa {
-            add_rsa_recipient(&cms, cert)?;
+            add_certificate_recipient(&cms, cert)?;
         }
         let input = ffi::BIO_new_mem_buf(plaintext.as_ptr().cast(), len);
         if input.is_null() {
@@ -722,7 +733,9 @@ pub(crate) fn encrypt_entries(plaintext: &[u8], entries: &[&KeyEntry]) -> Result
     for e in entries {
         if let Some(scheme) = Scheme::ALL.into_iter().find(|s| s.matches_entry(&e.alg)) {
             publics.push((scheme, b64_decode(&e.spki_b64)?));
-        } else if e.alg.contains("rsa") && !e.cert_pem.is_empty() {
+        } else if (e.alg.contains("rsa") || crate::ec::Curve::from_encryption(&e.alg).is_some())
+            && !e.cert_pem.is_empty()
+        {
             rsa.push(
                 X509::from_pem(e.cert_pem.as_bytes())
                     .map_err(|_| ossl_failed(SmimeError::InvalidKey("X.509".into())))?,

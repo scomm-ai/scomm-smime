@@ -490,6 +490,8 @@ class ScommSmime {
 
   int get abiVersion => _abiVersion();
 
+  bool get supportsNistCurves => abiVersion >= 8;
+
   // ABI 3 symbols are looked up on first use, so the older calls keep
   // working against an ABI 2 library until the native rev is bumped.
   late final _VerifyDetachedD _verifyDetached =
@@ -867,6 +869,7 @@ class ScommSmime {
     int? validityYears,
     SmimeKeyProfile profile = SmimeKeyProfile.classical,
   }) {
+    if (profile.wire >= 4) _requireAbi(8);
     if (profile == SmimeKeyProfile.pqcEncryption ||
         profile == SmimeKeyProfile.pqcSigning) {
       _requireAbi(scommSmimeAbiPqcOnly);

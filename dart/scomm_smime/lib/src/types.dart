@@ -108,7 +108,12 @@ enum SmimeKeyProfile {
   pqcEncryption(2),
 
   /// ABI 4: only the `pqc-mldsa65` signing entry, with its certificate.
-  pqcSigning(3);
+  pqcSigning(3),
+
+  /// ABI 8: NIST curve profiles with ECDSA signing and ECDH encryption.
+  classicalP256(4),
+  classicalP384(5),
+  classicalP521(6);
 
   const SmimeKeyProfile(this.wire);
   final int wire;

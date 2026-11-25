@@ -65,8 +65,8 @@ fn pqc_key_for(userid: &[u8]) -> (Vec<u8>, Vec<u8>) {
 const DATA: &[u8] = b"abi 3 data";
 
 #[test]
-fn abi_is_7_and_every_symbol_is_linked() {
-    assert_eq!(scomm_smime_abi_version(), 7);
+fn abi_is_8_and_every_symbol_is_linked() {
+    assert_eq!(scomm_smime_abi_version(), 8);
     assert_ne!(link_anchor(), 0);
 }
 

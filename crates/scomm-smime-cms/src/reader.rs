@@ -144,12 +144,19 @@ pub(crate) fn decrypt(
     let mut bad_key = None;
     for entry in bundle
         .encryption_entries()
-        .filter(|e| e.alg.contains("rsa") && !e.cert_pem.is_empty())
+        .filter(|e| {
+            (e.alg.contains("rsa") || crate::ec::Curve::from_encryption(&e.alg).is_some())
+                && !e.cert_pem.is_empty()
+        })
     {
         let Some(pkcs8) = entry.pkcs8_b64.as_ref() else {
             continue;
         };
-        let loaded = rsa_from_pkcs8(pkcs8.as_bytes()).and_then(|key| {
+        let loaded = match crate::ec::Curve::from_encryption(&entry.alg) {
+            Some(curve) => crate::ec::private_key(entry, curve),
+            None => rsa_from_pkcs8(pkcs8.as_bytes()),
+        }
+        .and_then(|key| {
             X509::from_pem(entry.cert_pem.as_bytes())
                 .map(|cert| (key, cert))
                 .map_err(|_| ossl_failed(SmimeError::InvalidKey("X.509".into())))

@@ -18,3 +18,7 @@ crates/scomm-smime-ffi/    C ABI (`scomm_smime`)
 dart/scomm_smime/          Flutter FFI plugin
 include/scomm_smime.h
 ```
+
+### Classical NIST curves (ABI 8)
+
+Profiles 4/5/6 select P-256/P-384/P-521 with separate ECDSA signing and ECDH encryption keys and certificates. Signing algorithm names are `smime-ecdsa-p256-sha256`, `smime-ecdsa-p384-sha384`, and `smime-ecdsa-p521-sha512`. Encryption entries use `smime-ecdh-p256`, `smime-ecdh-p384`, and `smime-ecdh-p521`. EC recipients use OpenSSL CMS KeyAgreeRecipientInfo (RFC 5753), curve-matched SHA-256/384/512 KDF, AES-256 key wrap and AES-256-GCM AuthEnvelopedData. Mixed RSA, X25519 and hybrid recipients remain supported. Existing profiles, defaults and the RSA CSR flow are unchanged. Dart exposes `supportsNistCurves` and corresponding `SmimeKeyProfile` values; older binaries are refused. App UI and directory integration are separate.

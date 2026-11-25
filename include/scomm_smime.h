@@ -16,6 +16,8 @@ int32_t scomm_smime_inspect(
     const uint8_t *key, size_t key_len,
     uint8_t **json_out, size_t *json_len);
 
+/* ABI 8 adds profiles 4/5/6: P-256/P-384/P-521, separate ECDSA
+ * signing and ECDH encryption keys. Existing profile IDs are unchanged. */
 int32_t scomm_smime_generate(
     const uint8_t *userid, size_t userid_len,
     const uint8_t *passphrase, size_t passphrase_len,

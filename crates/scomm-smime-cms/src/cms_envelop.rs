@@ -36,15 +36,18 @@ pub fn inspect_cms(cms: &[u8]) -> Result<MessageInfo> {
         Kind::Enveloped { recipients, .. } => {
             let hybrid = recipients.contains(&Recipient::LegacyHybrid)
                 || recipients.contains(&Recipient::ScommKem(Scheme::MlKem768X25519));
+            let ec = recipients.contains(&Recipient::KeyAgreement);
             let x25519 = recipients.contains(&Recipient::LegacyX25519)
                 || recipients.contains(&Recipient::ScommKem(Scheme::X25519));
             MessageInfo {
                 encrypted: true,
                 signed: false,
                 pqc: hybrid,
-                classical_recipient: x25519,
+                classical_recipient: x25519 || ec,
                 algorithm: if hybrid {
                     ALG_MLKEM_HYBRID
+                } else if ec {
+                    "smime-ecdh"
                 } else if x25519 {
                     ALG_X25519
                 } else {
@@ -117,7 +120,7 @@ pub(crate) fn decrypt_with_envelope(
 /// AuthEnvelopedData (F1 only; KEKRI in EnvelopedData is not ours).
 fn is_standard(authenticated: bool, recipients: &[Recipient]) -> bool {
     recipients.iter().any(|r| match r {
-        Recipient::KeyTransport => true,
+        Recipient::KeyTransport | Recipient::KeyAgreement => true,
         Recipient::ScommKem(_) => authenticated,
         _ => false,
     })
@@ -139,7 +142,7 @@ fn open_standard(
         })
         .collect();
     let mut failure = SmimeError::WrongPrivateKey;
-    if recipients.contains(&Recipient::KeyTransport) {
+    if recipients.contains(&Recipient::KeyTransport) || recipients.contains(&Recipient::KeyAgreement) {
         match reader::decrypt(der, authenticated, bundle) {
             Ok(r) => return Ok(r),
             Err(SmimeError::WrongPrivateKey) => {}

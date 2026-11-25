@@ -61,6 +61,8 @@ extern "C" {
 pub(crate) enum Recipient {
     /// KeyTransRecipientInfo (RSA) that OpenSSL can open.
     KeyTransport,
+    /// CMS KeyAgreeRecipientInfo, opened by OpenSSL.
+    KeyAgreement,
     /// KeyTransRecipientInfo whose `rsaesOaep` parameters are absent, as
     /// older Scomm builds write it while actually using SHA-256. Standard
     /// encoders always write the parameters, and OpenSSL refuses the
@@ -151,6 +153,7 @@ fn recipient_types(cms: &CmsContentInfo) -> Vec<Recipient> {
                 match CMS_RecipientInfo_type(ri) {
                     CMS_RECIPINFO_TRANS if is_legacy_oaep(ri) => Recipient::LegacyKeyTransport,
                     CMS_RECIPINFO_TRANS => Recipient::KeyTransport,
+                    1 => Recipient::KeyAgreement, // CMS_RECIPINFO_AGREE
                     _ => kek_scheme(ri).map_or(Recipient::Unsupported, Recipient::ScommKem),
                 }
             })

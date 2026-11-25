@@ -113,6 +113,7 @@ fn signing_follows_the_release_switch() {
             SignAlg::RsaPss => ALG_RSA_PSS,
             SignAlg::Ed25519 => ALG_ED25519,
             SignAlg::MlDsa65 => ALG_MLDSA65,
+            SignAlg::Ecdsa(curve) => curve.signing(),
         };
         let bundle = KeyBundle {
             v: 1,
@@ -176,6 +177,9 @@ fn structure_matches_the_design_per_openssl_cli() {
             SignAlg::RsaPss => ("sha256", "rsassaPss"),
             SignAlg::Ed25519 => ("sha512", "ED25519"),
             SignAlg::MlDsa65 => ("sha512", "ML-DSA-65"),
+            SignAlg::Ecdsa(crate::ec::Curve::P256) => ("sha256", "ecdsa-with-SHA256"),
+            SignAlg::Ecdsa(crate::ec::Curve::P384) => ("sha384", "ecdsa-with-SHA384"),
+            SignAlg::Ecdsa(crate::ec::Curve::P521) => ("sha512", "ecdsa-with-SHA512"),
         };
         assert!(printed.contains(digest), "{alg:?}\n{printed}");
         assert!(printed.contains(signature), "{alg:?}\n{printed}");

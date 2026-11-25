@@ -92,7 +92,10 @@ fn run(f: impl FnOnce() -> Result<i32>) -> i32 {
 }
 
 fn sign_algorithm(name: &[u8]) -> Result<&'static str> {
-    [ALG_ED25519, ALG_MLDSA65, ALG_RSA_PSS, ALG_RSA_PKCS1]
+    [
+        ALG_ED25519, ALG_MLDSA65, ALG_RSA_PSS, ALG_RSA_PKCS1,
+        ALG_ECDSA_P256, ALG_ECDSA_P384, ALG_ECDSA_P521,
+    ]
         .into_iter()
         .find(|alg| alg.as_bytes() == name)
         .ok_or_else(|| SmimeError::UnsupportedAlgorithm(String::from_utf8_lossy(name).into_owned()))
@@ -263,6 +266,9 @@ pub unsafe extern "C" fn scomm_smime_generate_with_validity(
         1 => KeyProfile::PqcCms,
         2 => KeyProfile::PqcEncryption,
         3 => KeyProfile::PqcSigning,
+        4 => KeyProfile::ClassicalP256,
+        5 => KeyProfile::ClassicalP384,
+        6 => KeyProfile::ClassicalP521,
         _ => {
             set_error("unknown key profile".into());
             return SmimeError::InvalidArgument("profile".into()).code();

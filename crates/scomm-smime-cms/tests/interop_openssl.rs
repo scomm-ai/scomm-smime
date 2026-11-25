@@ -201,7 +201,7 @@ fn openssl_to_scomm() {
         let key_bundle = bundle(vec![cli.entry(alg, "encryption", &crt, Some(&p8))]);
         let opts = vec!["-aes256".to_string(), "-recip".to_string(), crt.clone()];
         let refs: Vec<&str> = opts.iter().map(String::as_str).collect();
-        encrypted(name, &crt, &key, &refs, &key_bundle, FORMAT_F0_STD, Gap("H1"));
+        encrypted(name, &crt, &key, &refs, &key_bundle, FORMAT_F0_STD, Works);
     }
 
     // OpenSSL's CMS only does key agreement for "EC", "DH" and "DHX" keys, so it

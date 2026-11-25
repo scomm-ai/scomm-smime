@@ -81,6 +81,7 @@ pub(crate) enum SignAlg {
     RsaPss,
     Ed25519,
     MlDsa65,
+    Ecdsa(crate::ec::Curve),
 }
 
 impl SignAlg {
@@ -90,6 +91,9 @@ impl SignAlg {
             ALG_RSA_PSS => SignAlg::RsaPss,
             ALG_ED25519 => SignAlg::Ed25519,
             ALG_MLDSA65 => SignAlg::MlDsa65,
+            ALG_ECDSA_P256 => SignAlg::Ecdsa(crate::ec::Curve::P256),
+            ALG_ECDSA_P384 => SignAlg::Ecdsa(crate::ec::Curve::P384),
+            ALG_ECDSA_P521 => SignAlg::Ecdsa(crate::ec::Curve::P521),
             _ => return None,
         })
     }
@@ -100,6 +104,7 @@ impl SignAlg {
             SignAlg::RsaPkcs1 | SignAlg::RsaPss => alg.contains("rsa"),
             SignAlg::Ed25519 => alg == ALG_ED25519,
             SignAlg::MlDsa65 => is_pqc_catalog(alg),
+            SignAlg::Ecdsa(curve) => alg == curve.signing(),
         }
     }
 
@@ -110,6 +115,7 @@ impl SignAlg {
             match self {
                 SignAlg::RsaPkcs1 | SignAlg::RsaPss => ffi::EVP_sha256(),
                 SignAlg::Ed25519 | SignAlg::MlDsa65 => ffi::EVP_sha512(),
+                SignAlg::Ecdsa(curve) => curve.digest().as_ptr(),
             }
         }
     }
@@ -124,6 +130,7 @@ impl SignAlg {
             SignAlg::Ed25519 => PKey::private_key_from_raw_bytes(&b64_decode(secret)?, Id::ED25519)
                 .map_err(|_| ossl_failed(SmimeError::InvalidKey("Ed25519 seed".into()))),
             SignAlg::MlDsa65 => pqc::mldsa_pkey(&b64_decode(secret)?),
+            SignAlg::Ecdsa(curve) => crate::ec::private_key(entry, curve),
         }
     }
 }
@@ -209,7 +216,8 @@ fn sign_with_digest(
 }
 
 /// Catalog name of the single signer's signature algorithm, for
-/// `inspect_message`: ML-DSA-65 and Ed25519 by OID, anything else RSA.
+/// `inspect_message`. ECDSA curve-specific names also require a matching
+/// embedded signer key; a digest OID alone does not identify a curve.
 /// `None` when the SignedData does not parse or has no single signer.
 pub(crate) fn signer_algorithm(der: &[u8]) -> Option<&'static str> {
     let cms = CmsContentInfo::from_der(der).ok();
@@ -220,6 +228,8 @@ pub(crate) fn signer_algorithm(der: &[u8]) -> Option<&'static str> {
         if infos.is_null() || ffi::OPENSSL_sk_num(infos) != 1 {
             return None;
         }
+        let empty: Stack<X509> = Stack::new().ok()?;
+        CMS_set1_signers_certs(cms.as_ptr(), empty.as_ptr(), 0);
         let si = ffi::OPENSSL_sk_value(infos, 0);
         let (mut pk, mut signer, mut dig, mut sig) = (
             ptr::null_mut(),
@@ -236,6 +246,29 @@ pub(crate) fn signer_algorithm(der: &[u8]) -> Option<&'static str> {
         let mut buf = [0u8; 64];
         let n = ffi::OBJ_obj2txt(buf.as_mut_ptr().cast(), buf.len() as c_int, obj, 1);
         let oid = std::str::from_utf8(&buf[..n.max(0) as usize]).ok()?;
+        if matches!(
+            oid,
+            "1.2.840.10045.4.3.2" | "1.2.840.10045.4.3.3" | "1.2.840.10045.4.3.4"
+        ) {
+            let expected = match oid {
+                "1.2.840.10045.4.3.2" => crate::ec::Curve::P256,
+                "1.2.840.10045.4.3.3" => crate::ec::Curve::P384,
+                _ => crate::ec::Curve::P521,
+            };
+            let actual = if signer.is_null() {
+                None
+            } else {
+                X509Ref::from_ptr(signer)
+                    .public_key()
+                    .ok()
+                    .and_then(|key| crate::ec::Curve::from_key(&key).ok())
+            };
+            return Some(if actual == Some(expected) {
+                expected.signing()
+            } else {
+                "smime-ecdsa"
+            });
+        }
         Some(match oid {
             "2.16.840.1.101.3.4.3.18" => scomm_smime_core::ALG_MLDSA65,
             "1.3.101.112" => scomm_smime_core::ALG_ED25519,

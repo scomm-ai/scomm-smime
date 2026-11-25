@@ -159,7 +159,13 @@ fn read_file(bytes: &[u8], password: &str, out: &mut Collected) -> Result<()> {
         // Base64 of a DER file without armor, as some portals show it.
         return read_der(&strict_base64(&String::from_utf8_lossy(bytes))?, password, out);
     }
-    read_der(trim_trailing_space(bytes), password, out)
+    // A DER file may legitimately end in a whitespace-valued byte (about 2%
+    // of random keys), so trailing newlines are trimmed only if raw fails.
+    let trimmed = trim_trailing_space(bytes);
+    match read_der(bytes, password, out) {
+        Err(_) if trimmed.len() != bytes.len() => read_der(trimmed, password, out),
+        r => r,
+    }
 }
 
 fn is_base64_or_space(b: u8) -> bool {

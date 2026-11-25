@@ -3,6 +3,7 @@ mod cert;
 mod certinfo;
 mod classify;
 mod csr;
+mod ec;
 mod import;
 mod cms_envelop;
 mod kekri;
@@ -158,6 +159,9 @@ impl SmimeProvider for CmsSmime {
             KeyProfile::Classical => {
                 vec![x25519_encrypt_entry()?, ed25519_sign_entry(userid, years)?]
             }
+            KeyProfile::ClassicalP256 => ec::entries(userid, ec::Curve::P256, years)?,
+            KeyProfile::ClassicalP384 => ec::entries(userid, ec::Curve::P384, years)?,
+            KeyProfile::ClassicalP521 => ec::entries(userid, ec::Curve::P521, years)?,
             KeyProfile::PqcCms => vec![
                 x25519_encrypt_entry()?,
                 ed25519_sign_entry(userid, years)?,
@@ -196,7 +200,7 @@ impl SmimeProvider for CmsSmime {
             .find(|e| alg.matches_entry(&e.alg))
             .ok_or(SmimeError::NoSuitableSigningKey)?;
         match alg {
-            SignAlg::RsaPkcs1 => signed::sign(data, entry, alg),
+            SignAlg::RsaPkcs1 | SignAlg::Ecdsa(_) => signed::sign(data, entry, alg),
             _ if RELEASE_2_WRITERS => signed::sign(data, entry, alg),
             SignAlg::Ed25519 => sign_ed25519(data, entry),
             SignAlg::MlDsa65 => sign_mldsa(data, entry),
@@ -242,6 +246,10 @@ impl SmimeProvider for CmsSmime {
                 .encryption_entries()
                 .find(|e| e.alg.contains("rsa-oaep") || e.alg.contains("rsa"))
                 .cloned();
+            let ec = bundle
+                .encryption_entries()
+                .find(|e| ec::Curve::from_encryption(&e.alg).is_some())
+                .cloned();
             let x = bundle
                 .encryption_entries()
                 .find(|e| e.alg.contains("x25519") && !e.alg.contains("mlkem"))
@@ -252,6 +260,8 @@ impl SmimeProvider for CmsSmime {
                 chosen.push(pqc);
             } else if let Some(x) = x {
                 chosen.push(x);
+            } else if let Some(ec) = ec {
+                chosen.push(ec);
             } else if let Some(rsa) = rsa {
                 chosen.push(rsa);
             } else {
@@ -270,7 +280,8 @@ impl SmimeProvider for CmsSmime {
             )));
         }
         let refs: Vec<&crate::bundle::KeyEntry> = chosen.iter().collect();
-        let der = if RELEASE_2_WRITERS {
+        let has_ec = refs.iter().any(|e| ec::Curve::from_encryption(&e.alg).is_some());
+        let der = if RELEASE_2_WRITERS || has_ec {
             kekri::encrypt_entries(plaintext, &refs)?
         } else {
             encrypt_to_entries(plaintext, &refs)?

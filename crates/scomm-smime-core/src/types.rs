@@ -1,6 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyProfile {
-    /// RSA-OAEP encrypt + X25519 encrypt + RSA-PSS sign (Outlook classical).
+    /// Ed25519 signing and X25519 encryption (the existing default).
     Classical,
     /// Classical dual-publish plus `smime-mlkem768-x25519` encrypt and `pqc-mldsa65` sign.
     PqcCms,
@@ -8,6 +8,12 @@ pub enum KeyProfile {
     PqcEncryption,
     /// Only `pqc-mldsa65` sign with its certificate (ABI 4). No classical entries.
     PqcSigning,
+    /// ABI 8: ECDSA signing and ECDH encryption on NIST P-256.
+    ClassicalP256,
+    /// ABI 8: ECDSA signing and ECDH encryption on NIST P-384.
+    ClassicalP384,
+    /// ABI 8: ECDSA signing and ECDH encryption on NIST P-521.
+    ClassicalP521,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,7 +116,7 @@ pub struct GeneratedKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignOptions {
     pub detached: bool,
-    /// [`ALG_ED25519`], [`ALG_MLDSA65`] or [`ALG_RSA_PSS`]. A bundle can hold
+    /// Ed25519, ML-DSA, RSA or one of the curve-specific ECDSA algorithms. A bundle can hold
     /// several signing keys, so the caller always names the one it means.
     pub algorithm: &'static str,
 }
@@ -251,6 +257,12 @@ pub const ALG_X25519: &str = "smime-x25519";
 pub const ALG_RSA_PSS: &str = "smime-rsa-pss-sha256";
 /// RSA PKCS#1 v1.5 with SHA-256, the SignedData the app has always sent.
 pub const ALG_RSA_PKCS1: &str = "smime-rsa-pkcs1-sha256";
+pub const ALG_ECDSA_P256: &str = "smime-ecdsa-p256-sha256";
+pub const ALG_ECDSA_P384: &str = "smime-ecdsa-p384-sha384";
+pub const ALG_ECDSA_P521: &str = "smime-ecdsa-p521-sha512";
+pub const ALG_ECDH_P256: &str = "smime-ecdh-p256";
+pub const ALG_ECDH_P384: &str = "smime-ecdh-p384";
+pub const ALG_ECDH_P521: &str = "smime-ecdh-p521";
 pub const ALG_ED25519: &str = "smime-ed25519";
 pub const ALG_MLKEM_HYBRID: &str = "smime-mlkem768-x25519";
 pub const ALG_MLDSA65: &str = "pqc-mldsa65";
